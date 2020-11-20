@@ -22,6 +22,9 @@ cd -P "$( dirname "$SOURCE" )"
 DIR="$( pwd )"
 VIRTUALENV_ROOT=${VIRTUALENV_ROOT:-"${DIR}/.venv"}
 
+#setting a timedelta to be able to pull a new core version
+time_between_updates=3600
+
 function help() {
     echo "${script}:  Mycroft command/service launcher"
     echo "usage: ${script} [COMMAND] [restart] [params]"
@@ -151,21 +154,26 @@ function launch-all() {
 }
 
 function check-dependencies() {
-    if [ -f .dev_opts.json ] ; then
-        auto_update=$( jq -r ".auto_update" < .dev_opts.json 2> /dev/null)
-    else
-        auto_update="false"
-    fi
-    if [ "$auto_update" == "true" ] ; then
+
+    if $( jq .autoupdate .dev_opts.json ) 2> /dev/null ; then
         # Check github repo for updates (e.g. a new release)
-        git pull
+        time_last_pull=$(stat -c %Y .git/FETCH_HEAD)
+        timedelta=$(( $time_between_updates + $time_last_pull - $EPOCHSECONDS ))
+        if [[ $timedelta -lt 0 ]] ; then
+            git fetch
+            if [[ $(git rev-parse HEAD) != $(git rev-parse @{u}) ]] ; then
+                git pull
+            fi
+        else
+            echo -n "... Skipping check for the next $(( $timedelta / 60 )) Minutes"
+        fi
     fi
 
     if [ ! -f .installed ] || ! md5sum -c &> /dev/null < .installed ; then
         # Critical files have changed, dev_setup.sh should be run again
-        if [ "$auto_update" == "true" ] ; then
+        if $( jq .autoupdate .dev_opts.json ) ; then
             echo "Updating dependencies..."
-            bash dev_setup.sh
+            source dev_setup.sh
         else
             echo "Please update dependencies by running ./dev_setup.sh again."
             if command -v notify-send >/dev/null ; then
