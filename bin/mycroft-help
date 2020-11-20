@@ -23,6 +23,7 @@ echo "can be found at: ${DIR}"
 echo
 echo "Mycroft-specific commands you can use from the Linux command prompt:"
 echo "  mycroft-cli-client       Command line client, useful for debugging"
+echo "  mycroft-wizard           Setup Mycroft with your preferences"
 echo "  mycroft-msm              Mycroft Skills Manager, to manage your Skills"
 echo "  mycroft-start            Launch/restart Mycroft services"
 echo "  mycroft-stop             Stop Mycroft services"
