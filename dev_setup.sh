@@ -702,6 +702,7 @@ chmod +x "$TOP"/bin/mycroft-pip
 chmod +x "$TOP"/bin/mycroft-say-to
 chmod +x "$TOP"/bin/mycroft-skill-testrunner
 chmod +x "$TOP"/bin/mycroft-speak
+chmod +x "$TOP"/bin/mycroft-wizard
 
 #Store a fingerprint of setup
 md5sum "$TOP"/requirements/requirements.txt "$TOP"/requirements/extra-audiobackend.txt "$TOP"/requirements/extra-stt.txt "$TOP"/requirements/extra-mark1.txt "$TOP"/requirements/tests.txt "$TOP"/dev_setup.sh > .installed
