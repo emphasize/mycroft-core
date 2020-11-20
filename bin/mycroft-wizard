@@ -615,7 +615,7 @@ function start_up() {
             if ! $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
                 prepare_bash_patch
             else
-                awk '/CUSTOM CODE BELOW/ {p=1}; p; /source/ {p=0}' ~/.bashrc > ~/.bashrc.patch
+                awk '/CUSTOM CODE BELOW/ {p=1}; p; /END CUSTOM/ {p=0}' ~/.bashrc > ~/.bashrc.patch
             fi
             cp ~/.bashrc ~/.bashrc.bak
             cd ~
