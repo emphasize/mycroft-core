@@ -1,0 +1,1477 @@
+#!/bin/bash
+##########################################################################
+# .mycroft-wizard
+#
+# Copyright 2018 Mycroft AI Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+##########################################################################
+
+# This script is call by dev_setup.sh, auto_run-sh or may be called manually
+# to redo the mycroft-wizard process
+
+# DO NOT EDIT THIS SCRIPT!  It may be replaced later by the update process,
+# but you can edit and customize the audio_setup.sh and custom_setup.sh
+# script.  Use the audio_setup.sh to change audio output configuration and
+#   default volume; use custom_setup.sh to initialize any other IoT devices.
+#
+REPO_PICROFT="https://raw.githubusercontent.com/emphasize/enclosure-picroft/refactor_setup_wizard"
+
+declare -a setup_sequence
+sequential=false
+
+clear
+#since mycroft-wizard is sitting in bin/ TOP is one directory below
+#this case covers microft-wipe not sourced by other setup scripts
+if [[ -z $TOP ]]; then
+    TOP=$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )
+fi
+
+#################################################
+# Metadata Saving with qr
+#################################################
+# This saves the option choices; USAGE: save_choices [KEY] [VALUE]; save_choices branch true
+function save_choices() {
+    if [[ ! -f "$TOP"/.dev_opts.json ]] ; then
+        touch "$TOP"/.dev_opts.json
+        echo "{}" > "$TOP"/.dev_opts.json
+    fi
+    #no chance to bring in boolean with --arg
+    #NOTE: Boolean are called without -r (which only outputs string)
+    #eg if jq .startup "$TOP"/.dev_opts.json ; then
+    if [ "$2" != true ] && [ "$2" != false ] ; then
+        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = "'$2'"')
+    else
+        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = '$2'')
+    fi
+    echo "$JSON" > "$TOP"/.dev_opts.json
+}
+
+function show_help() {
+    echo
+    echo "Usage: mycroft-wizard [options]"
+    echo "Setup your environment for running the mycroft-core services."
+    echo
+    echo "Options:"
+    echo
+    echo "     w/o options             Single step wizard"
+    echo
+    echo "     -all                    Cycle through given options"
+    echo "     -resume                 Resume the sequential wizard"
+    echo "                             where you left off (quit)"
+    echo
+    echo "     -h, --help              Show this message"
+    echo
+}
+
+for var in "$@" ; do
+    if [[ $var == '-all' ]] ; then
+        sequential=true
+    fi
+    if [[ $var ==  '-resume' ]]; then
+        sequential=true
+        save_choices restart true
+    fi
+    if [[ $var ==  '-h' ]]; then
+        show_help
+    fi
+done
+
+#################################################
+# Sequential Wizard Setup (mycroft-wizard -all)
+#################################################
+#set the mycroft-wizard sequence to the inst_types' possible
+if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) == "custom" ]] ; then
+    setup_sequence=(used_branch auto_update start_up add_path check_code extended_setup audio_input audio_output output_test input_test END)
+elif [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) == "picroft" ]] ; then
+    setup_sequence=(used_branch auto_update security audio_input audio_output output_test input_test END)
+fi
+
+#################################################
+# Single Step Wizard Setup (mycroft-wizard)
+#################################################
+#functions ("contextual setup modules") to be deleted/added if run in selective mode
+delete_item_in_sequence=( extended_setup END )
+add_items_in_sequence=( alsa_info )
+
+#single option wizard setup (based on dialog https://linux.die.net/man/1/dialog )
+TERMINAL=$(tty)
+HEIGHT=20
+WIDTH=40
+CHOICE_HEIGHT=10
+BACKTITLE="Mycroft Wizard"
+TITLE="Single Selection"
+MENU="Choose one of the following options:"
+
+#restructure setup sequence if the setup should run selectively
+if [[ $sequential = false ]]; then
+    for target in "${delete_item_in_sequence[@]}"; do
+        for i in "${!setup_sequence[@]}"; do
+            if [[ ${setup_sequence[i]} = $target ]]; then
+                unset 'setup_sequence[i]'
+                break
+            fi
+        done
+    done
+    setup_sequence=("${setup_sequence[@]}" "${add_items_in_sequence[@]}")
+    #restructure the setup_sequence to the needs of dialog (eg [tag item, ..])
+    #tag=function, item=option saved in .dev_opts
+    for i in "${!setup_sequence[@]}"; do
+        #trim function name to get the dev_opts key
+        item_dev_opts=$( echo "${setup_sequence[$i]}" | tr -dc [:alnum:] )
+        item=$( jq -r ".$item_dev_opts" "$TOP"/.dev_opts.json )
+        if [[ $item == null ]] ; then
+            if [[ ${setup_sequence[$i]} == "alsa_info" ]] ; then
+                item="ALSA-Debug-Infos"
+            elif [[ ${setup_sequence[$i]} == "output_test" ]] ; then
+                item="Volume/Speaker-Test"
+            elif [[ ${setup_sequence[$i]} == "input_test" ]] ; then
+                item="Microphone-Test"
+            else
+                item="-"
+            fi
+        fi
+        setup_sequence[i]="${setup_sequence[$i]} $item"
+    done
+fi
+
+#system specs that got printed out in a dialog box during "single selection wizard"
+function show_system_specs {
+    PI_VERSION="$(tr -d '\0' </proc/device-tree/model)"
+    DIST=$(grep "^ID=" /etc/os-release | awk -F'=' '/^ID/ {print $2}' | sed 's/\"//g')
+    PICROFT_VERSION="$( cat "$TOP"/version 2> /dev/null )"
+    MYCROFT_CORE_VERSION="$(python -c 'from mycroft import version; v=version.VersionManager.get(); print(v["coreVersion"])')"
+    SOUNDIN="$( arecord -l | grep "\[.*\]" | awk -F'[][]' '{print $2}')"
+    SOUNDOUT="$( aplay -l | grep "\[.*\]" | awk -F'[][]' '{print $2}')"
+    CPU="$(</sys/class/thermal/thermal_zone0/temp)"
+    CPU_TEMP="$((CPU/1000))'C"
+    printf "$PI_VERSION\n$DIST\n\nCore: $MYCROFT_CORE_VERSION\nPicroft: $PICROFT_VERSION\n\nSound Input:\n$SOUNDIN\n\nSound Output:\n$SOUNDOUT\n\nCPU: $CPU_TEMP"
+}
+
+##########################################
+# Helper Functions
+##########################################
+
+function found_exe() {
+    hash "$1" 2>/dev/null
+}
+
+if found_exe tput ; then
+    GREEN="$(tput setaf 2)"
+    BLUE="$(tput setaf 4)"
+    CYAN="$(tput setaf 6)"
+    YELLOW="$(tput setaf 3)"
+    RESET="$(tput sgr0)"
+    HIGHLIGHT=${YELLOW}
+fi
+
+#Todo Using Pako?
+function pkmgr_cmd() {
+    if  [ $1 = debian ] ; then
+        pkmgr_inst_autoaccept="apt-get install -y"
+        pkmgr_inst="apt-get install"
+    elif [ $1 = arch ] ; then
+        pkmgr_inst_autoaccept="pacman -Sy --needed --noconfirm"
+        pkmgr_inst="pacman"
+    elif [ $1 = centos ] || [ $1 = redhat ] ; then
+        pkmgr_inst_autoaccept="yum install -y"
+        pkmgr_inst="yum install"
+    elif [ $1 = open_suse ] ; then
+        pkmgr_inst_autoaccept="zypper install -y"
+        pkmgr_inst="zypper install"
+    elif [ $1 = fedora ] ; then
+        pkmgr_inst_autoaccept="dnf install -y"
+        pkmgr_inst="dnf install"
+    elif [ $1 = gentoo ] ; then
+        pkmgr_inst_autoaccept="emerge --noreplace"
+        pkmgr_inst="emerge"
+    elif [ $1 = alpine ] ; then
+        pkmgr_inst_autoaccept="apk add"
+        pkmgr_inst="apk add"
+    fi
+    }
+
+dist=$( jq -r ".dist // empty" "$TOP"/.dev_opts.json )
+pkmgr_cmd $dist
+
+function get_YNSQ() {
+    # Loop until the user hits the Y or the N key
+    echo -e -n "     Choice [${CYAN}Y${RESET}/${CYAN}N${RESET}/${CYAN}S${RESET}kip/${CYAN}Q${RESET}uit]: "
+    while true; do
+        read -N1 -s key
+        case $key in
+        [Yy])
+            return 0
+            ;;
+        [Nn])
+            return 1
+            ;;
+        [Ss])
+            return 1
+            ;;
+        [Qq])
+            clear
+            exit
+            ;;
+        esac
+    done
+}
+
+function set_volume() {
+    # Use amixer to set the volume level
+    # This attempts to set both "Master" and "PCM"
+
+    amixer set PCM $@ > /dev/null 2>&1
+    amixer set Master $@ > /dev/null 2>&1
+}
+
+function save_volume() {
+    # Save command to amixer to set the volume level
+    if [[ -n $( grep "amixer set PCM" "$TOP"/audio_setup.sh) ]] ; then
+        sed -i "s/^amixer set PCM.*/amixer set PCM $@ > \/dev\/null 2>\&1/" "$TOP"/audio_setup.sh
+    else
+        echo "amixer set PCM $@ > /dev/null 2>&1" >> "$TOP"/audio_setup.sh
+    fi
+    if [[ -n $( grep "amixer set Master" "$TOP"/audio_setup.sh) ]] ; then
+        sed -i "s/^amixer set Master.*/amixer set Master $@ > \/dev\/null 2>\&1/" "$TOP"/audio_setup.sh
+    else
+        echo "amixer set Master $@ > /dev/null 2>&1" >> "$TOP"/audio_setup.sh
+    fi
+}
+
+function speak() {
+    # Generate TTS audio using Mimic 1
+    "$TOP"/mimic/bin/mimic -t $@ -o /tmp/speak.wav 2> /dev/null
+
+    # Play the audio using the configured WAV output mechanism
+    wavcmd=$( jq -r ".play_wav_cmdline" /etc/mycroft/mycroft.conf )
+    # Play a prerendered test.wav if mimic is not present to not force mimic to be built
+    if [[ ! -f "$TOP"/mimic/bin/mimic ]]; then
+        wavcmd="${wavcmd/\%1/${TOP}\/mycroft\/res\/snd\/test.wav}"
+    else
+        wavcmd="${wavcmd/\%1/\/tmp\/speak.wav}"
+    fi
+    $( $wavcmd >/dev/null 2>&1 )
+}
+
+function restart {
+    #ensure continous sequence during initial_setup if reboot is called
+    if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ]] && [[ $sequential == true ]] ; then
+        echo "bash "$TOP"/bin/mycroft-wizard -all" >> .bashrc
+        if $( jq .autoupdate "$TOP"/.dev_opts.json ) || \
+           $( jq .startup "$TOP"/.dev_opts.json ) ; then
+            sed -i "s/^source/#source/" ~/.bashrc
+        fi
+    fi
+    echo "     ${HIGHLIGHT}Reboot is required (Done automatically)${RESET}"
+    echo
+    #check if multistaged setup (like Matrix for instance) is run after initial setup
+    if [[ -n $( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json ) ]] && ! $( jq .initial_setup "$TOP"/.dev_opts.json) ; then
+        echo "     Since this is a  multistaged setup process you are required to run ${CYAN}mycroft-wizard${HIGHLIGHT}"
+        echo "     to continue the process. Otherwise your device will not run properly${RESET}"
+    fi
+    #sequencer processing
+    if [[ $sequential = true ]] ; then
+        save_choices restart true
+    fi
+
+    sleep 10
+    sudo reboot
+}
+
+function prepare_bash_patch {
+    #Initial Patch Process: Pop out the custom changes in the existing
+    #.bashrc as a difference between the skeleton and the user .bashrc
+    # The ongoing one will be managed by auto_run.sh
+    set +Ee
+    touch ~/.bashrc.patch
+    comm -1 -3 /etc/skel/.bashrc ~/.bashrc > ~/.bashrc.patch 2> /dev/null
+    set -Ee
+    #inserts firstline even if it is empty
+    echo -e "0a\n\n# CUSTOM CODE BELOW ######################## dont edit header/footer #\n.\nw" | ed -s ~/.bashrc.patch
+    echo "
+######################################################### END CUSTOM #" >> ~/.bashrc.patch
+}
+
+function auto_login {
+    if ! $( jq .startup "$TOP"/.dev_opts.json ) || ! $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+        ##Autologin
+        sudo mkdir -p /etc/systemd/system/getty@tty1.service.d &> /dev/null
+        echo "[Service]" | sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf &> /dev/null
+        echo "ExecStart=" | sudo tee -a /etc/systemd/system/getty@tty1.service.d/autologin.conf &> /dev/null
+        echo "ExecStart=-/sbin/agetty --autologin $USER --noclear %I 38400 linux" | sudo tee -a /etc/systemd/system/getty@tty1.service.d/autologin.conf &> /dev/null
+        sudo systemctl enable getty@tty1.service
+    fi
+}
+
+#################################################
+# Prerequisites that are not covered in base dev_setup
+#################################################
+# TODO: Even necessary?
+# installs Pulseaudio if not already installed
+if ! found_exe pulseaudio ; then
+    echo "Installing Pulse Audio ..."
+    if [[ $dist="gentoo" ]] ; then
+        sudo sed -i '/^USE/ s/"/ pulseaudio"/2' /etc/portage/make.conf
+        sudo emerge -uND --changed-use --deep @world
+        #TODO Reboot?
+    else
+        sudo $pkmgr_inst_autoaccept pulseaudio
+    fi
+    sleep 1
+fi
+
+#pull down picroft conf
+if [ ! -f /etc/mycroft/mycroft.conf ] ; then
+    echo "Pulling down the basic configuration File ..."
+    sudo mkdir -p /etc/mycroft/
+    cd /etc/mycroft
+    sudo wget -N -q $REPO_PICROFT/etc/mycroft/mycroft.conf
+    sleep 1
+fi
+
+# Create RAM disk (the Picroft version of mycroft.conf point at it)
+if ! grep -Fq "tmpfs /ramdisk" /etc/fstab ; then
+    echo "Creating Ramdisk ..."
+    echo "tmpfs /ramdisk tmpfs rw,nodev,nosuid,size=20M 0 0" | sudo tee -a /etc/fstab &> /dev/null
+    sleep 1
+fi
+
+################################################################################################
+################################################################################################
+###### contextual setup modules
+################################################################################################
+
+function used_branch() {
+    if $( jq .initial_setup "$TOP"/.dev_opts.json ) ; then
+        echo
+        echo "#########################################################################"
+        echo
+        echo "$CYAN          Welcome to the Mycroft Setup Wizard!  $RESET"
+        echo
+        echo "#########################################################################"
+        echo
+        echo "This script is designed to make working with Mycroft easy. During this"
+        echo "first run of we will ask you a few questions to help setup your"
+        echo "environment."
+        sleep 0.5
+    fi
+    echo
+    echo "#########################################################################"
+    echo
+    echo "Do you want to run on $CYAN'master'$RESET or against a $CYAN'dev' branch$RESET?  Unless you are"
+    echo "a developer modifying mycroft-core itself, you should run on the"
+    echo "'master' branch.  It is updated bi-weekly with a stable release."
+    echo
+    echo "${HIGHLIGHT}If you change the branch$RESET from dev to master you might experience"
+    echo "that some skills (or parts of it) stop working. That's due to"
+    echo "experimental features missing on master"
+    echo
+    saved=$( jq -r '.usedbranch // empty' "$TOP"/.dev_opts.json )
+    if [[ -n $saved ]]; then
+        echo "     You are currently running the ${HIGHLIGHT}${saved}${RESET} branch"
+        echo
+    fi
+    echo "     ${HIGHLIGHT}Y${RESET})es, run on the stable 'master' branch"
+    echo "     ${HIGHLIGHT}N${RESET})o, I want to run unstable branches"
+    echo
+    #todo if get_YNSQ && [[ $saved = false ]]; then
+    if get_YNSQ ; then
+        echo -e "     $HIGHLIGHT Y - using 'master' branch $RESET"
+        save_choices usedbranch master
+        cd "$TOP"
+        git checkout master &> /dev/null
+    elif [[ $key = S ]] || [[ $key = s ]] ; then
+        echo -e "$HIGHLIGHT S - Skip $RESET"
+        echo
+        return
+    else
+        echo -e "$HIGHLIGHT N - using an unstable branch $RESET"
+        save_choices usedbranch dev
+        cd "$TOP"
+        git checkout dev &> /dev/null
+    fi
+    # Fetching for future time comparisons
+    git fetch
+
+    sleep 0.5
+}
+
+function auto_update() {
+    echo
+    echo "#########################################################################"
+    echo
+    echo "Mycroft is actively developed and constantly evolving.  It is recommended"
+    echo "that you update regularly.  Would you like to ${CYAN}automatically update$RESET"
+    echo "Mycroft whenever logging in?  This is highly recommended, especially for"
+    echo "those running against the 'master' branch."
+    echo
+    echo "${CYAN}For custom Linux installations:$RESET This will add the startup script"
+    echo "to the end of your .bashrc only running the update routine everytime on boot"
+    echo
+    saved=$( jq -r .autoupdate "$TOP"/.dev_opts.json )
+    if [[ -n $saved ]] ; then
+        echo "     You are currently running ${HIGHLIGHT}$(test $saved = "false" && echo "without ")auto updates${RESET}"
+        echo
+    fi
+    echo "     ${HIGHLIGHT}Y${RESET})es, automatically check for updates"
+    echo "     ${HIGHLIGHT}N${RESET})o, update manually using 'git pull'"
+    echo
+    if get_YNSQ ; then
+        echo -e "     $HIGHLIGHT Y - update automatically $RESET"
+        autoupdate=true
+        #safety measure to not run multiple times
+        if [[ $saved != $autoupdate ]] ; then
+            #only applied to custom linux installs
+            if [ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ] && \
+                 ! $( jq .startup "$TOP"/.dev_opts.json ) ; then
+                cd "$TOP"
+                wget -N -q $REPO_PICROFT/home/pi/mycroft-core/auto_run.sh
+                if ! $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+                    prepare_bash_patch
+                    cp /etc/skel/.bashrc ~/.bashrc
+                    cat ~/.bashrc.patch | tee -a ~/.bashrc &> /dev/null
+                    save_choices bash_patched true
+                fi
+                echo "source "$TOP"/auto_run.sh" >> ~/.bashrc
+            fi
+            auto_login
+            save_choices autoupdate true
+        fi
+    elif [[ $key = S ]] || [[ $key = s ]] ; then
+        echo -e "$HIGHLIGHT S - Skip $RESET"
+        echo
+        return
+    else
+        echo -e "     $HIGHLIGHT N - I will be responsible for keeping Mycroft and the sytsem updated $RESET"
+        autoupdate=false
+        save_choices autoupdate false
+    fi
+    sleep 0.5
+
+    # exception for running the packet manager?
+    if [[ $autoupdate = true ]]; then
+        echo
+        echo "#########################################################################"
+        echo
+        echo "Do you want to create an${CYAN} exception for the packetmanager to not"
+        echo "require sudo priviliges${RESET}? This is recommended if you are running"
+        echo "headless, so you don't need to maintain this information if dependencies"
+        echo "got added or skills require additional system packages"
+        echo
+        echo "     ${HIGHLIGHT}Y${RESET})es"
+        echo "     ${HIGHLIGHT}N${RESET})o"
+        echo
+        if get_YNSQ ; then
+            echo -e "     $HIGHLIGHT Y - hook me up $RESET"
+            echo
+            echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/$pkmgr_inst *" | sudo tee /etc/sudoers.d/013_"$USER"-pkmgr_install &> /dev/null
+            if [[ $( jq -r '.dist // empty' "$TOP"/.dev_opts.json ) == "debian" ]] ; then
+                echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/apt-get * update *" | sudo tee /etc/sudoers.d/015_"$USER"-apt_update &> /dev/null
+                echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/dpkg *, ! /usr/bin/dpkg --install *, ! /usr/bin/dpkg -i *" | sudo tee /etc/sudoers.d/014_"$USER"-dpkg &> /dev/null
+            fi
+        else
+            echo -e "     $HIGHLIGHT N - i take care $RESET"
+            echo
+        fi
+    fi
+
+    # Cleanup
+    if [[ $autoupdate != $saved ]] && [[ $autoupdate = false ]] ; then
+        # remove auto_run only if its a custom install and startup isn't wanted
+        if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ]] && \
+              ! $( jq .startup "$TOP"/.dev_opts.json ) ; then
+            rm "$TOP"/auto_run.sh
+            sed -i "\:source $TOP/auto_run.sh:d" ~/.bashrc
+            sed -i '/CUSTOM CODE/I,+1 d' ~/.bashrc
+            sed -i '$!N;/END CUSTOM/!P;D' ~/.bashrc
+            save_choices bash_patched false
+            sudo systemctl disable getty@tty1.service
+        fi
+        #get rid of the update password exceptions
+        sudo rm /etc/sudoers.d/013_"$USER"-pkmgr_install
+        if [[ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ]] ; then
+            sudo rm /etc/sudoers.d/014_"$USER"-dpkg
+            sudo rm /etc/sudoers.d/015_"$USER"-apt_update
+        fi
+    fi
+    #looking for PATH added by addpath and remove or add it if need be (only selection wizard)
+    if [[ $startup != $saved ]] && [[ $sequential = "false" ]]   ; then
+        add_path
+    fi
+}
+
+function add_path() {
+    if ! $( jq .startup "$TOP"/.dev_opts.json ) && ! $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+        echo
+        echo "#########################################################################"
+        echo
+        echo "There are several Mycroft helper commands in the bin folder.  These"
+        echo "can be added to your system PATH, making it simpler to use Mycroft."
+        echo
+        echo "Would you like this to be added to your PATH in the .profile?"
+        echo
+        saved=$( jq -r .addpath "$TOP"/.dev_opts.json )
+        if [[ -n $saved ]]; then
+            echo "     Mycroft binaries are ${HIGHLIGHT}$(test $saved = "false" && echo "not ")included${RESET} in PATH"
+            echo
+        fi
+        if get_YNSQ ; then
+            echo -e "     $HIGHLIGHT Y - Adding Mycroft commands to your PATH $RESET"
+            echo
+            addpath=true
+            #safety measure to not run multiple times
+            if [[ $saved != $addpath ]] ; then
+                if [[ ! -f ~/.profile_mycroft ]] ; then
+                    # Only add the following to the .bash_profile if .profile_mycroft
+                    # doesn't exist, indicating dev_setup.sh has not been run before
+                    # .bash_profile because this is the first looked at across the spectrum
+                    if [[ ! -f ~/.bash_profile ]]; then
+                        #set up a skeleton .bash_profile
+                        printf 'if [ -n "$BASH_VERSION" ]; then\n    if [ -f "$HOME/.bashrc" ]; then\n        . "$HOME/.bashrc""\n    fi\nfi' > ~/.bash_profile
+                    fi
+                    cp ~/.bash_profile ~/.bash_profile.old
+                    echo '' >> ~/.bash_profile
+                    echo '# include Mycroft commands' >> ~/.bash_profile
+                    echo 'source ~/.profile_mycroft' >> ~/.bash_profile
+                    diff ~/.bash_profile.old ~/.bash_profile | tee ~/.bash_profile.patch &> /dev/null
+                fi
+
+                # WARNING: This file may be replaced in future, do not customize.
+                # set path so it includes Mycroft utilities
+                printf "if [ -d \"${TOP}/bin\" ] ; then\n    PATH=\"\$PATH:${TOP}/bin\"\nfi" > ~/.profile_mycroft
+                echo -e "     Type ${CYAN}mycroft-help$RESET to see available commands."
+                save_choices addpath true
+            fi
+        elif [[ $key = S ]] || [[ $key = s ]] ; then
+            echo -e "$HIGHLIGHT S - Skip $RESET"
+            echo
+            return
+        else
+            echo -e "     $HIGHLIGHT N - PATH left unchanged $RESET"
+            save_choices addpath false
+            addpath=false
+        fi
+
+        #Cleanup
+        #Reverse Patch to pop out Mycroft additions
+        if [ $addpath != $saved ] && [ $addpath = false ] ; then
+            patch -R ~/.bash_profile < ~/.bash_profile.patch
+            rm ~/.profile_mycroft
+        fi
+        sleep 0.5
+
+    else
+        echo
+        echo "#########################################################################"
+        echo
+        echo "There is no need to run both .profile_mycroft and setting the PATH during"
+        echo "startup. (.profile_mycroft will be deleted to avoid clutter in case it was"
+        echo "set up earlier)"
+        echo
+        if $( jq .addpath "$TOP"/.dev_opts.json ) ; then
+            patch -R ~/.bash_profile < ~/.bash_profile.patch
+            rm ~/.profile_mycroft
+        fi
+        save_choices addpath false
+    fi
+}
+
+function start_up() {
+    echo
+    echo "#########################################################################"
+    echo
+    echo "Do you want to set up a ${CYAN}startup script${RESET} running Mycroft on"
+    echo "boot (or the commandline interface if SSH in)?"
+    echo
+    echo "This also sets up ${CYAN}automatic login${RESET} for the USER $USER"
+    echo "during boot (if you're booting into commandline)."
+    echo
+    saved=$( jq -r .startup "$TOP"/.dev_opts.json )
+    if [[ -n $saved ]]; then
+        echo "     You are currently running ${HIGHLIGHT}$(test $saved = "false" && echo "without ")Picroft startup script${RESET}"
+        echo
+    fi
+    echo "     ${HIGHLIGHT}Y${RESET})es, start Mycroft automatically after boot"
+    echo "     ${HIGHLIGHT}N${RESET})o, i take care"
+    echo
+    if get_YNSQ ; then
+        echo -e "     ${HIGHLIGHT}Y - start Mycroft automatically after boot $RESET"
+        echo
+        startup=true
+        #safety measure to not run multiple times
+        if [[ $saved != $startup ]] ; then
+            save_choices startup true
+            if ! $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+                prepare_bash_patch
+            else
+                awk '/CUSTOM CODE BELOW/ {p=1}; p; /source/ {p=0}' ~/.bashrc > ~/.bashrc.patch
+            fi
+            cp ~/.bashrc ~/.bashrc.bak
+            cd ~
+            wget -N -q $REPO_PICROFT/home/pi/mycroft-core/.bashrc
+            #sed in $TOP -> .bashrc
+            sed -i "s|^source auto_run.sh|source $TOP/auto_run.sh|" ~/.bashrc
+            cp ~/.bashrc ~/.bashrc.old
+
+            if [ -f ~/.bashrc.patch ] ; then
+                sed -i "/# Initialize/e cat ~/.bashrc.patch" ~/.bashrc
+                mv ~/.bashrc.patch ~/.bashrc.patch.bak
+                echo
+                echo "     ${HIGHLIGHT}Bashrc patched. Please check ~/.bashrc[$RESET]"
+            fi
+
+            cd $TOP
+            wget -N -q $REPO_PICROFT/home/pi/mycroft-core/audio_setup.sh
+            wget -N -q $REPO_PICROFT/home/pi/mycroft-core/custom_setup.sh
+            if [[ ! -f $TOP/auto_run.sh ]]; then
+                wget -N -q $REPO_PICROFT/home/pi/mycroft-core/auto_run.sh
+            fi
+            auto_login
+            if [[ $sequential = false ]] ; then
+                echo
+                echo "     ${HIGHLIGHT}A manual reboot is required to take full effect!$RESET"
+            fi
+        fi
+    elif [[ $key = S ]] || [[ $key = s ]] ; then
+        echo -e "$HIGHLIGHT S - Skip $RESET"
+        echo
+        return
+    else
+        echo -e "$HIGHLIGHT N - i take care $RESET"
+        echo
+        startup=false
+        save_choices startup false
+    fi
+
+    #Cleanup
+    if [[ $startup != $saved ]] && [[ $startup = "false" ]] ; then
+        rm "$TOP"/audio_setup.sh
+        rm "$TOP"/custom_setup.sh
+        rm "$TOP"/version
+        if $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+            mv ~/.bashrc ~/.bashrc.bak
+            cat /etc/skel/.bashrc > ~/.bashrc
+            cat ~/.bashrc.patch.bak | tee -a ~/.bashrc &> /dev/null
+            rm ~/.bashrc.patch.bak
+        fi
+        if $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+            echo "source "$TOP"/auto_run.sh" >> ~/.bashrc
+        else
+            rm "$TOP"/auto_run.sh
+            #erase header/footer indicateing custom code
+            sed -i '/CUSTOM CODE/I,+1 d' ~/.bashrc
+            sed -i '$!N;/END CUSTOM/!P;D' ~/.bashrc
+            save_choices bash_patched false
+            systemctl disable getty@tty1.service
+        fi
+    fi
+    sleep 0.5
+
+    #looking for PATH added by addpath and remove or add it if need be (only selection wizard)
+    if [[ $startup != $saved ]] && [[ $sequential = "false" ]]   ; then
+        add_path
+    fi
+}
+
+function check_code() {
+    # Add PEP8 pre-commit hook
+    sleep 0.5
+    echo
+    echo "#########################################################################"
+    echo
+    echo "(Developer) Do you want to automatically check code-style when submitting"
+    echo "code. If unsure answer yes."
+    echo
+    saved=$( jq -r .checkcode "$TOP"/.dev_opts.json )
+    if [[ -n $saved ]]; then
+        echo "     Code is ${HIGHLIGHT}$(test $saved = "false" && echo "un")checked${RESET} at the moment"
+        echo
+    fi
+    if get_YNSQ ; then
+        echo "     ${HIGHLIGHT}Will install PEP8 pre-commit hook...${RESET}"
+        if [[ ! -f "$TOP"/.git/hooks/pre-commit ]]; then
+            mv "$TOP"/.git/hooks/pre-commit.sample "$TOP"/.git/hooks/pre-commit
+        fi
+        checkcode=true
+        save_choices checkcode true
+    elif [[ $key = S ]] || [[ $key = s ]] ; then
+        echo -e "$HIGHLIGHT S - Skip $RESET"
+        echo
+        return
+    else
+        checkcode=false
+        save_choices checkcode false
+    fi
+
+    #cleanup
+    if [ $checkcode != $saved ] && [ $checkcode == "false" ] ; then
+        rm "$TOP"/.git/hooks/pre-commit
+    fi
+}
+
+function extended_setup() {
+    #todo only if sequential = true?
+    echo
+    echo "#########################################################################"
+    echo
+    echo "Do you want to run ${CYAN}additional setup steps$RESET regarding your"
+    echo "hardware Setup?"
+    echo
+    echo "     ${HIGHLIGHT}Y${RESET})es"
+    echo "     ${HIGHLIGHT}N${RESET})o"
+    echo
+    if get_YNSQ ; then
+        echo -e "     $HIGHLIGHT Y - hook me up $RESET"
+        echo
+        if $( jq .initial_setup "$TOP"/.dev_opts.json ); then
+            echo
+            echo "     ${CYAN}The extended setup will be provided after"
+        fi
+        save_choices extendedsetup true
+    elif [[ $key = S ]] || [[ $key = s ]] ; then
+        echo -e "$HIGHLIGHT S - Skip $RESET"
+        echo
+        save_choices extendedsetup false
+        return
+    else
+        echo -e "     $HIGHLIGHT N - i want to do this by myself $RESET"
+        echo
+        save_choices extendedsetup false
+    fi
+    if $( jq .initial_setup "$TOP"/.dev_opts.json ); then
+        echo "     installing the required Python packages as a next step"
+        echo
+        echo "     ${HIGHLIGHT}This will take aprox. 10 min to run (depending on device)$RESET"
+        echo "     (Please ignore the warnings about PIP, this is just a reminder)"
+        echo
+        #this will ensure the script runs out, yet stays in sequence
+        runout=true
+        save_choices restart true
+        sleep 0.5
+    fi
+}
+
+function audio_input() {
+    # "// not" gives back false if nothing is set, true/false in case it is
+    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+        #Looking for substages. // empty gives us "" if none is set, so this
+        #needs no primer. Remember to "cat .dev_opts.json | jq 'del(.setup_substage)'
+        #at the end
+        setup_substage=$( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json )
+        case $setup_substage in
+            '')
+                echo
+                echo "#########################################################################"
+                echo "   HARDWARE SETUP"
+                echo "#########################################################################"
+                echo
+                echo "Microphone configuration:"
+                echo
+                echo "As a voice assistant, Mycroft needs to access a microphone to operate.
+                "
+                saved=$( jq -r '.audioinput // empty' "$TOP"/.dev_opts.json )
+                if [[ -n $saved ]]; then
+                    echo "Microphone input is set to ${HIGHLIGHT}$saved${RESET}
+                "
+                fi
+                echo "Please ensure your microphone is connected and select from the following"
+                echo "list of microphones:"
+                echo
+                echo "  1) Seeed Mic Array 2.0 (USB)"
+                echo "  2) PlayStation Eye (USB)"
+                echo "  3) Blue Snoball ICE (USB)"
+                if [ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ] ; then
+                    echo "  4) Google AIY v1 mic array"
+                    echo "  5) Matrix Voice HAT."
+                fi
+                echo
+                echo "  6) Other USB microphone (unsupported -- good luck!)"
+                echo
+                echo -n "${HIGHLIGHT}Choice [1-6]:${RESET} "
+                echo
+                while true; do
+                    read -N1 -s key
+                    case $key in
+                    1)
+                        echo "     $key - Seeed Mic Array 2.0 (USB)"
+                        echo
+                        audioinput="seed_mic_array_20"
+                        #safety measure to not run multiple times
+                        if [[ $saved != $audioinput ]] ; then
+                            # fjq: Can look for 2886:0018 with lsusb to verify mic is plugged in.
+
+                            # Flash latest Seeed firmware
+                            echo "     Downloading and flashing latest firmware from Seeed..."
+                            echo
+                            sudo "$TOP"/.venv/bin/pip -q install pyusb click
+                            echo 'SUBSYSTEM=="usb", ATTR{idProduct}=="0018", ATTR{idVendor}=="2886", MODE:="0666"' | sudo tee /etc/udev/rules.d/60-respeaker.rules &> /dev/null
+                            cd ~
+                            git clone https://github.com/respeaker/usb_4_mic_array.git &> /dev/null
+                            cd usb_4_mic_array
+                            #sudo "$TOP"/.venv/bin/python dfu.py --download 48k_1_channel_firmware.bin &> /dev/null
+                            cd ..
+
+                            # Configure Mycroft.conf  to use plughw:ArrayUAC10,0 (Seeed device)
+                            # doin it jq style to avoid pattern search
+                            JSON=$(cat /etc/mycroft/mycroft.conf | jq '.play_wav_cmdline = "paplay %1"' | jq '.play_mp3_cmdline = "mpg123 %1"')
+                            echo "$JSON" | sudo tee /etc/mycroft/mycroft.conf &> /dev/null
+
+                            #configure /etc/pulse/default.pa
+                            #Todo revert if .bak present
+                            sudo cp /etc/pulse/default.pa /etc/pulse/default.pa.bak
+                            echo "wrote backup to /etc/pulse/default.pa.bak"
+                            sudo sed -i "s/^load-module module-stream-restore/#load-module module-stream-restore/" /etc/pulse/default.pa
+                            sudo sed -i "s/^load-module module-role-cork/#load-module module-role-cork/" /etc/pulse/default.pa
+                            sudo sed -i "s/^load-module module-suspend-on-idle/#load-module module-suspend-on-idle/" /etc/pulse/default.pa
+                            #set real time sqeuencing to 0 for Pi (no RTC)
+                            sudo sed -i "s/^load-module module-udev-detect/load-module module-udev-detect tsched=0/" /etc/pulse/default.pa
+                            #Networking preconfig
+                            sudo sed -i 's/^#load-module module-native-protocol-tcp/load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1;192.168.0.0\/16;172.16.0.0\/12;10.0.0.0\/8 auth-anonymous=1/' /etc/pulse/default.pa
+                            sudo sed -i "s/^load-module module-native-protocol-unix/load-module module-native-protocol-unix auth-anonymous=1/" /etc/pulse/default.pa
+                            sudo sed -i "s/^#load-module module-zeroconf-publish/load-module module-zeroconf-publish/" /etc/pulse/default.pa
+                            echo "load-module module-role-ducking
+    load-module module-combine-sink sink_name=MycroftOS_ALL
+    set-default-sink MycroftOS_ALL" | sudo tee -a /etc/pulse/default.pa &> /dev/null
+
+                            #config /etc/pulse.daemon.conf
+                            sudo cp /etc/pulse/daemon.conf /etc/pulse/daemon.conf.bak
+                            echo "wrote backup to /etc/pulse/daemon.conf.bak"
+                            sudo sed -i "s/^.*default-sample-rate.*/default-sample-rate = 48000/" /etc/pulse/daemon.conf
+                            sudo sed -i "s/^.*alternate-sample-rate.*/alternate-sample-rate = 44100/" /etc/pulse/daemon.conf
+                            sudo sed -i "s/^.*default-sample-channels.*/default-sample-channels = 4/" /etc/pulse/daemon.conf
+                            sudo sed -i "s/^.*default-sample-format.*/default-sample-format = s24le/" /etc/pulse/daemon.conf
+                            sudo sed -i "s/^.*avoid-resampling.*/avoid-resampling = yes/" /etc/pulse/daemon.conf
+                            sudo sed -i "s/^.*resample-method.*/resample-method = ffmpeg/" /etc/pulse/daemon.conf
+
+                            #pushing everything to pulseaudio
+                            if [ ! -f /etc/asound.conf ] ; then
+                                sudo touch /etc/asound.conf
+                            else
+                                cp /etc/asound.conf /etc/asound.conf.bak
+                                echo "wrote backup to /etc/asound.conf.bak"
+                            fi
+                            #using printf due to inconsistencies of echo -e "\n"
+                            printf '# Use PulseAudio by default\npcm.!default {\n   type pulse\n   fallback "sysdefault"\n   hint {\n      show on\n      description "Default ALSA Output (currently PulseAudio Sound Server)"\n   }\n}\n\nctl.!default {\n   type pulse\n   fallback "sysdefault"\n}\n' | sudo tee -a /etc/asound.conf &> /dev/null
+
+                            save_choices audioinput seed_mic_array_20
+                            if [[ $sequential = true ]] ; then
+                                save_choices restart true
+                            else
+                                restart
+                            fi
+                        fi
+                        break
+                        ;;
+
+                    2)
+                        audioinput="google_aiy"
+                        echo "     $key - Google AIY Voice HAT and microphone board (Voice Kit v1)"
+                        echo
+                        #safety measure to not run multiple times
+                        if [[ $saved != $audioinput ]] ; then
+
+                            # Get AIY drivers
+                            echo "deb https://packages.cloud.google.com/apt aiyprojects-stable main" | sudo tee /etc/apt/sources.list.d/aiyprojects.list
+                            wget -q -O - https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add - &> /dev/null
+
+                            sudo apt-get  -o Acquire::ForceIPv4=true update
+                            # hack to get aiy-io-mcu-firmware to be installed
+                            sudo mkdir /usr/lib/systemd/system
+
+                            sudo apt-get -y install aiy-dkms aiy-io-mcu-firmware aiy-vision-firmware dkms raspberrypi-kernel-headers
+                            sudo apt-get -y install aiy-dkms aiy-voicebonnet-soundcard-dkms aiy-voicebonnet-routes
+                            # At this time, 12/17/2018, installing aiy-python-wheels breaks the install
+                            # https://community.mycroft.ai/t/setting-up-aiy-python-wheels-protobuf-not-supported-on-armv6-1/5130/2
+                            # sudo apt-get install -y aiy-python-wheels
+                            sudo apt-get -y install leds-ktd202x-dkms
+
+                            # make soundcard recognizable
+                            sudo sed -i \
+                                -e "s/^dtparam=audio=on/#\0/" \
+                                -e "s/^#\(dtparam=i2s=on\)/\1/" \
+                                /boot/config.txt
+                            grep -q -F "dtoverlay=i2s-mmap" /boot/config.txt || sudo echo "dtoverlay=i2s-mmap" | sudo tee -a /boot/config.txt
+                            grep -q -F "dtoverlay=googlevoicehat-soundcard" /boot/config.txt || sudo echo "dtoverlay=googlevoicehat-soundcard" | sudo tee -a /boot/config.txt
+
+                            # fix bug that where audio gets clipped by PulseAudio
+                            # See: https://github.com/google/aiyprojects-raspbian/issues/297
+                            sudo sed -i -e "s/^load-module module-suspend-on-idle/#load-module module-suspend-on-idle/" /etc/pulse/default.pa
+
+                            # Changes mycroft.conf to use the default output device
+                            JSON=$(cat /etc/mycroft/mycroft.conf | jq '.play_wav_cmdline = "aplay %1"' | jq '.play_mp3_cmdline = "mpg123 %1"')
+                            echo "$JSON" | sudo tee /etc/mycroft/mycroft.conf &> /dev/null
+
+                            # Install asound.conf
+                            sudo cp AIY-asound.conf /etc/asound.conf
+
+                            # rebuild venv
+                            #save_choices firstrun false
+                            #source "$TOP"/dev_setup.sh
+                            #save_choices firstrun true
+
+                            save_choices audioinput google_aiy
+                            if [[ $sequential = true ]] ; then
+                                save_choices restart true
+                            else
+                                restart
+                            fi
+                        fi
+                        break
+                        ;;
+                    3)
+                        echo "     $key - PS Eye"
+                        echo
+                        # nothing to do, this is the default
+                        save_choices audioinput ps_eye
+                        break
+                        ;;
+                    4)
+                        echo "     $key - Blue Snoball"
+                        echo
+                        # nothing to do, this is the default
+                        save_choices audioinput blue_snoball
+                        break
+                        ;;
+                    5)
+                        audioinput="matrix_voice"
+                        #safety measure to not run multiple times
+                        echo "     $key - Matrix Voice Hat"
+                        echo
+                        if [[ $saved != $audioinput ]] ; then
+
+                            echo "     ========================================================================="
+                            echo
+                            echo "     Installing drivers for Matrix Voice Hat.  This process is automatic, but "
+                            echo "     requires several reboots.  Thanks for your patience!"
+                            echo
+                            sleep 2
+
+                            echo "     Adding Matrix repo and installing packages..."
+                            # add repo
+                            curl https://apt.matrix.one/doc/apt-key.gpg | sudo apt-key add -
+                            echo "deb https://apt.matrix.one/raspbian $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/matrixlabs.list
+                            sudo update-ca-certificates
+                            sudo apt-get -o Acquire::ForceIPv4=true update -y
+                            sudo apt-get -o Acquire::ForceIPv4=true upgrade -y
+
+                            echo "     Rebooting to apply kernel updates..."
+
+                            save_choices setup_substage MatrixS1
+                            save_choices audioinput matrix_voice
+                            # in this case (multi substaged sequences) call the reboot to not progress
+                            # in setup_stages
+                            restart
+                        fi
+                        break
+                        ;;
+                    6)
+                        echo "     $key - Other"
+                        echo
+                        echo "     Other microphone _might_ work, but there are no guarantees."
+                        echo "     We'll run the tests, but you are on your own.  If you have"
+                        echo "     issues, the most likely cause is an incompatible microphone."
+                        echo "     The PS Eye is cheap -- save yourself hassle and just buy one!"
+
+                        save_choices audioinput other
+                        break
+                        ;;
+                    esac
+                done
+                ;;
+
+            #Substages below
+            'MatrixS1')
+                echo "Installing matrixio-kernel-modules..."
+                sudo apt install matrixio-kernel-modules -y
+
+                save_choices setup_substage MatrixS2
+                restart
+                ;;
+
+            'MatrixS2')
+                echo "Setting Matrix as standard microphone..."
+                echo "========================================================================="
+                pactl list sources short
+                sleep 5
+                pulseaudio -k
+                sleep 2
+                pactl set-default-source 2
+                pulseaudio --start
+
+                # TODO is this how it works? dev -> python
+                echo "========================================================================="
+                echo "Updating the Python virtual environment"
+                echo
+                source "$TOP"/dev_setup.sh
+
+                echo "Your Matrix microphone is now setup! One more reboot to start Mycroft..."
+                echo
+
+                if [[ $sequential = true ]] ; then
+                    save_choices restart true
+                fi
+                ;;
+        esac
+        #reset substage
+        JSON=$(cat "$TOP"/.dev_opts.json | jq 'del(.setup_substage)')
+        echo "$JSON" > "$TOP"/.dev_opts.json
+        if [[ $sequential = false ]] ; then
+            restart
+        fi
+    fi
+}
+
+function audio_output() {
+    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+        echo
+        echo "============================================================================="
+        echo
+        echo "How do you want Mycroft to output audio:"
+        echo
+        echo "     1) Speakers via 3.5mm output (aka 'audio jack' or 'headphone jack')"
+        echo "     2) HDMI audio (e.g. a TV or monitor with built-in speakers)"
+        echo "     3) USB audio (e.g. a USB soundcard or USB mic/speaker combo)"
+        echo "     4) ReSpeaker Mic Array v2.0 (speaker plugged in to Mic board)"
+        if [ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ] ; then
+            echo "     5) Google AIY Voice HAT and microphone board (Voice Kit v1)"
+            echo "     6) Matrix Voice HAT."
+        fi
+        echo
+        saved=$( jq -r '.audiooutput // empty' "$TOP"/.dev_opts.json )
+        if [[ -n $saved ]]; then
+            echo "Microphone input is set to ${HIGHLIGHT}$saved${RESET}
+        "
+        fi
+        echo -n "     ${HIGHLIGHT}Choice [1-5]:${RESET} "
+        echo
+        while true; do
+            read -N1 -s key
+            case $key in
+             1)
+                echo "     $key - Analog audio"
+                echo
+                # audio out the analog speaker/headphone jack
+                sudo amixer cset numid=3 "1" > /dev/null 2>&1
+                # reverse every possible change to audio_setup.sh
+                # regarding "amixer cset numid=3"
+                sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
+                echo 'sudo amixer cset numid=3 "1" > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
+                save_choices audiooutput analog_audio
+
+                break
+                ;;
+             2)
+                echo "     $key - HDMI audio"
+                echo
+                # audio out the HDMI port (e.g. TV speakers)
+                sudo amixer cset numid=3 "2" > /dev/null 2>&1
+                # reverse every possible change to audio_setup.sh
+                # regarding "amixer cset numid=3"
+                sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
+                echo 'sudo amixer cset numid=3 "2"  > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
+                save_choices audiooutput hdmi_audio
+
+                break
+                ;;
+             3)
+                echo "     $key - Automatic detection (USB audio)"
+                # audio out to the USB soundcard
+                sudo amixer cset numid=3 "0" > /dev/null 2>&1
+                # reverse every possible change to audio_setup.sh
+                # regarding "amixer cset numid=3"
+                sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
+                echo 'sudo amixer cset numid=3 "0"  > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
+                save_choices audiooutput usb_audio
+
+                break
+                ;;
+             4)
+                echo "     $key - Seeed Mic Array v2.0"
+                save_choices audiooutput seed_mic_array_20
+
+                break
+                ;;
+             5)
+                echo "     $key - Google AIY Voice HAT and microphone board (Voice Kit v1)"
+                save_choices audiooutput google_aiy
+
+                break
+                ;;
+             6)
+                echo "     $key - Matrix HAT"
+                save_choices audiooutput google_aiy
+
+                break
+                ;;
+            esac
+            sleep 2
+        done
+        sudo alsactl restart > /dev/null 2>&1
+        systemctl --user restart pulseaudio.service
+    fi
+}
+
+function output_test() {
+    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+        lvl=7
+        echo
+        echo "#########################################################################"
+        echo "   HARDWARE TESTS"
+        echo "#########################################################################"
+        echo
+        echo "Let's test and adjust the volume:"
+        echo
+        echo "     1-9) Set volume level (1-quietest, 9=loudest)"
+        echo "     T)est"
+        echo "     R)eboot"
+        echo "     D)one!"
+        echo
+        while true; do
+            echo -n -e "\r${HIGHLIGHT}Level [1-9/T/D/R]:${RESET} ${lvl}          \b\b\b\b\b\b\b\b\b\b"
+            echo
+            read -N1 -s key
+            case $key in
+             [1-9])
+                lvl=$key
+                # Set volume between 19% and 99%.  Lazily not allowing 100% :)
+                set_volume "${lvl}9%"
+                echo -e -n "\b$lvl PLAYING"
+                speak "Test"
+                ;;
+             [Rr])
+                echo "Rebooting..."
+                restart
+                ;;
+             [Tt])
+                set_volume "${lvl}9%"
+                echo -e -n "\b$lvl PLAYING"
+                speak "Test"
+                ;;
+             [Dd])
+                echo " - Saving"
+                break
+                ;;
+            esac
+        done
+        if [[ ! -f "$TOP"/audio_setup.sh ]] ; then
+            cd "$TOP"
+            wget -N -q $REPO_PICROFT/home/pi/mycroft-core/audio_setup.sh
+        fi
+        save_volume "${lvl}9%"
+        JSON=$( cat /etc/mycroft/mycroft.conf | jq '.VolumeSkill = {"default_level": '"$lvl"', "min_volume": 0, "max_volume": 10 }' )
+        echo "$JSON" | sudo tee /etc/mycroft/mycroft.conf &> /dev/null
+    fi
+}
+
+function input_test() {
+    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+        echo
+        echo "Testing microphone..."
+        echo "When prompted, say something like 'testing 1 2 3 4 5 6 7 8 9 10'."
+        echo "After 10 seconds, the sound heard through the microphone play back"
+        echo "for microphone verification."
+        echo
+        echo "     ${HIGHLIGHT}Press any key to begin the test...${RESET}"
+        echo
+        sleep 1
+        read -N1 -s key
+
+        # Launch mycroft-core audio test
+        source "$TOP"/start-mycroft.sh audiotest
+
+        retry_mic=0
+        echo "Did you hear the yourself in the audio?"
+        echo
+        echo "     1) Yes!"
+        echo "     2) No, let's repeat the test."
+        echo "     3) No :(   Let's move on and I'll mess with the microphone later."
+        echo
+        echo -n "     ${HIGHLIGHT}Choice [1-3]:${RESET} "
+        echo
+        while true; do
+            read -N1 -s key
+            case $key in
+            [1])
+                echo "     $key - Yes, good to go"
+                echo
+                break
+                ;;
+            [2])
+                echo "     $key - No, trying again"
+                echo
+                retry_mic=1
+                break
+                ;;
+            [3])
+                echo "     $key - No, I give up and will use command line only (for now)!"
+                echo
+                break
+                ;;
+            esac
+        done
+
+        if [ $retry_mic -eq 1 ] ; then
+            input_test
+        fi
+    fi
+}
+
+function security() {
+    echo "========================================================================="
+    echo "SECURITY SETUP:"
+    echo "Let's examine a few security settings."
+    echo
+    echo "By default, Raspbian is configured to not require a password to perform"
+    echo "actions as root (e.g. 'sudo ...').  This allows any application on the"
+    echo "pi to have full access to the system.  This can make some development"
+    echo "tasks easy, but is less secure.  Would you like to remain with this default"
+    echo "setup or would you like to enable standard 'sudo' password behavior?"
+    echo
+    echo "     1) Stick with normal Raspian configuration, no password for 'sudo'"
+    echo "     2) Require a password for 'sudo' actions."
+    echo
+    echo -n "     ${HIGHLIGHT}Choice [1-2]:${RESET} "
+    echo
+    while true; do
+        read -N1 -s key
+        case $key in
+         [1])
+            echo "     $key - No password"
+            echo
+            # nothing to do, this is the default
+            break
+            ;;
+         [2])
+            echo "     $key - Enabling password protection for 'sudo'"
+            echo
+            echo "#########################################################################"
+            echo
+            echo "Do you want to create an${CYAN} exception for the packetmanager to not"
+            echo "require a password${RESET}? This is recommended if you are running"
+            echo "headless, so you don't need to maintain this information if dependencies"
+            echo "got added or skills require additional system packages"
+            echo
+            echo "     ${HIGHLIGHT}Y${RESET})es"
+            echo "     ${HIGHLIGHT}N${RESET})o"
+            echo
+            if get_YNSQ ; then
+                echo -e "     $HIGHLIGHT Y - hook me up $RESET"
+                echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/$pkmgr_inst *" | sudo tee /etc/sudoers.d/013_"$USER"-pkmgr_install &> /dev/null
+                if [[ $( jq -r '.dist // empty' "$TOP"/.dev_opts.json ) == "debian" ]] ; then
+                    echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/apt-get update" | sudo tee /etc/sudoers.d/015_"$USER"-apt_update &> /dev/null
+                    echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/dpkg *, ! /usr/bin/dpkg --install *, ! /usr/bin/dpkg -i *" | sudo tee /etc/sudoers.d/014_"$USER"-dpkg &> /dev/null
+                fi
+            else
+                echo "$USER ALL=(ALL) ALL" | sudo tee /etc/sudoers.d/010_pi-nopasswd
+            fi
+            break
+            ;;
+        esac
+    done
+
+    echo
+    echo "Unlike standard Raspbian which has a user 'pi' with a password 'raspberry',"
+    echo "the ${CYAN}Picroft image$RESET uses the following as default username and password:"
+    echo
+    echo "$CYAN     Default user:      pi$RESET"
+    echo "$CYAN     Default password:  mycroft$RESET"
+    echo
+    echo "As a network connected device, having a unique password significantly"
+    echo "enhances your security and thwarts the majority of hacking attempts."
+    echo "We recommend setting a unique password for any device, especially one"
+    echo "that is exposed directly to the internet."
+    echo
+    echo "${CYAN}Would you like to enter a new password?$RESET"
+    echo
+    echo "     Y)es, prompt me for a new password"
+    echo "     N)o, stick with the default password of 'mycroft'"
+    echo
+    echo -n "     ${HIGHLIGHT}Choice [Y,N]:${RESET}"
+    echo
+    while true; do
+        read -N1 -s key
+        case $key in
+        [Yy])
+            echo "     $key - changing password"
+            user_pwd=0
+            user_confirm=1
+            echo -n "     ${HIGHLIGHT}Enter your new password (characters WILL NOT appear):${RESET} "
+            echo
+            read -s user_pwd
+            echo
+            echo -n "${HIGHLIGHT}Enter your new password again:${RESET} "
+            echo
+            read -s user_confirm
+            echo
+            if [ "$user_pwd" = "$user_confirm" ]; then
+                # Change 'pi' user password
+                echo "$USER:$user_pwd" | sudo chpasswd
+                break
+            else
+                echo "Passwords didn't match."
+            fi
+            ;;
+        [Nn])
+           echo "$key - Using password 'mycroft'"
+           break
+           ;;
+        esac
+    done
+}
+
+function END() {
+
+    save_choices firstrun false
+    devsetup_ended=true
+    echo
+    echo "========================================================================="
+    echo
+    echo "That's all, setup is complete!"
+    echo
+    if $( jq .startup "$TOP"/.dev_opts.json ); then
+        echo "Now we'll pull down the latest software updates and start Mycroft."
+        echo "You'll be prompted to pair this device with an account at"
+        echo "https://home.mycroft.ai, then you'll be set to enjoy your"
+        echo "Picroft!"
+    fi
+    echo
+    echo "Short recap of the options set:"
+    echo
+    echo "     Branch:                      ${HIGHLIGHT}$( jq -r .usedbranch .dev_opts.json )$RESET"
+    echo "     Auto update:                 ${HIGHLIGHT}$( jq -r .autoupdate .dev_opts.json )$RESET"
+    echo "     Auto startup:                ${HIGHLIGHT}$( jq -r .startup .dev_opts.json )$RESET"
+    if $( $( jq .startup "$TOP"/.dev_opts.json) || $( jq .addpath "$TOP"/.dev_opts.json ) || $( jq .autoupdate "$TOP"/.dev_opts.json ) ); then
+        on_path=true
+    else
+        on_path=false
+    fi
+    echo "     Exectute from everywhere:    ${HIGHLIGHT}$on_path$RESET"
+    if [[ $( jq .inst_type "$TOP"/.dev_opts.json ) = "custom" ]] ; then
+        echo "     Auto check code (dev):       ${HIGHLIGHT}$( jq -r .checkcode .dev_opts.json )$RESET"
+    fi
+    echo "     Input:                       ${HIGHLIGHT}$( jq -r .audioinput .dev_opts.json )$RESET"
+    echo "     Output:                      ${HIGHLIGHT}$( jq -r .audiooutput .dev_opts.json )$RESET"
+    echo
+    echo
+    echo "To rerun this setup, type "
+    echo
+
+    echo "     $CYAN'$(test $on_path = "false" && echo "$TOP/bin/")mycroft-wizard -all' (whole wizard sequence)"
+    echo "     '$(test $on_path = "false" && echo "$TOP/bin/")mycroft-wizard'      (single steps)$RESET"
+    echo
+    echo
+    echo "${HIGHLIGHT}Press any key to proceed ...${RESET}"
+    read -N1 -s anykey
+}
+
+function alsa_info() {
+    execlist=( alsa-info alsa-info.sh )
+    for exec in ${execlist[@]}; do
+        if found_exe $exec ; then
+            $exec --stdout --no-upload > "$TOP"/alsadebug.info
+            break
+        fi
+    done
+    dialog --clear --begin 2 2 --textbox "$TOP"/alsadebug.info 0 0 2>&1 >$TERMINAL
+}
+
+###################################################
+# Mycroft-Wizard Sequenzer
+###################################################
+
+##################################
+# Sequential Wizard
+if [[ $sequential = "true" ]] ; then
+    clear
+    #redefine the setup_sequence array if a restartion happend before
+    if $( jq .restart "$TOP"/.dev_opts.json ) ; then
+    #if $( jq .reboot "$TOP"/.dev_opts.json ) ; then
+        srch=$( jq -r ".setup_stage // empty" "$TOP"/.dev_opts.json )
+        items=${#setup_sequence[@]}
+        for (( i=0 ; i < items ; i++ )) ; do
+            if [ ${setup_sequence[$i]} != $srch ] ; then
+                unset setup_sequence[$i]
+            else
+                break
+            fi
+        done
+        # unhook the mycroft-wizard from .bashrc
+        sed -i "\:bash $TOP/bin/mycroft-wizard -all:d" ~/.bashrc
+        # clear the temporarily disabled auto_run script
+        if $( jq .autoupdate "$TOP"/.dev_opts.json ) || \
+           $( jq .startup "$TOP"/.dev_opts.json ) ; then
+            sed -i "s/^#source/source/" ~/.bashrc
+        fi
+        save_choices restart false
+    fi
+    for item in "${setup_sequence[@]}" ; do
+        save_choices setup_stage $item
+        if $( jq .restart "$TOP"/.dev_opts.json ) ; then
+            # just an indicator if the sequencer is supposed to run out
+            if [[ $runout != true ]] ; then
+                restart
+            else
+                runout=false
+                break
+            fi
+        fi
+        $item
+    done
+
+##################################
+# Single Selection Wizard
+else
+    save_choices extendedsetup true
+    #automatically resume setup process in case a substage is set
+    if [[ -n $( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json) ]] ; then
+        $( jq -r .setup_stage "$TOP"/.dev_opts.json)
+    else
+        while true; do
+            OPTIONS=(${setup_sequence[@]})
+            CHOICE=$(dialog \
+                --keep-window --begin 2 2 --infobox "$(show_system_specs)" 0 0 \
+                --and-widget \
+                --backtitle "$BACKTITLE" \
+                --title "$TITLE" \
+                --menu "$MENU" \
+                $HEIGHT $WIDTH $CHOICE_HEIGHT \
+                "${OPTIONS[@]}" \
+                2>&1 >$TERMINAL)
+            if [[ $? -eq 1 ]] ; then
+                break
+            fi
+            clear
+            $CHOICE
+            #update items if changed
+            for i in "${!setup_sequence[@]}"; do
+                IFS=' ' read -ra split <<< "${setup_sequence[$i]}"
+                item_dev_opts=$( echo "${split[0]}" | tr -dc [:alnum:] )
+                item=$( jq -r ".$item_dev_opts" "$TOP"/.dev_opts.json )
+                if [[ ${split[1]} != $item ]] && [[ $item != null ]] ; then
+                    setup_sequence["$i"]="${split[0]} $item"
+                fi
+            done
+        done
+    fi
+    clear
+    save_choices extendedsetup false
+fi
+
+#continue setup process with auto_run if this is not a firstrun
+if ($( jq .startup "$TOP"/.dev_opts.json ) || $( jq .autoupdate "$TOP"/.dev_opts.json )) && [[ $devsetup_ended == true ]] ; then
+    echo
+    echo "     ${HIGHLIGHT}Reboot is required${RESET}"
+    sleep 5
+    sudo reboot
+fi

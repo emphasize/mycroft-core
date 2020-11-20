@@ -27,6 +27,13 @@ doc/_build/
 .theia
 .venv/
 
+#picroft-scripts
+auto_run.sh
+audio-setup.sh
+custom-setup.sh
+bin/mycroft-wipe
+version
+
 # Created by unit tests
 test/unittests/skills/test_skill/settings.json
 test_conf.json
