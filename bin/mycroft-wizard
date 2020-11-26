@@ -37,24 +37,27 @@ if [[ -z $TOP ]]; then
     TOP=$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )
 fi
 
+DEVCONFIG="$TOP"/.dev_opts.json
+USERCONFIG="$HOME"/.mycroft/mycroft.conf
+
 #################################################
 # Metadata Saving with qr
 #################################################
-# This saves the option choices; USAGE: save_choices [KEY] [VALUE]; save_choices branch true
+# This saves the option choices; USAGE: save_choices [KEY] [VALUE] [CONFIG]; save_choices branch true "$DEVCONFIG"
 function save_choices() {
-    if [[ ! -f "$TOP"/.dev_opts.json ]] ; then
-        touch "$TOP"/.dev_opts.json
-        echo "{}" > "$TOP"/.dev_opts.json
+    if [[ ! -f "$DEVCONFIG" ]] ; then
+        touch "$DEVCONFIG"
+        echo "{}" > "$DEVCONFIG"
     fi
     #no chance to bring in boolean with --arg
     #NOTE: Boolean are called without -r (which only outputs string)
-    #eg if jq .startup "$TOP"/.dev_opts.json ; then
+    #eg if jq .startup "$DEVCONFIG" ; then
     if [ "$2" != true ] && [ "$2" != false ] ; then
-        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = "'$2'"')
+        JSON=$(cat "$3" | jq '.'$1' = "'$2'"')
     else
-        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = '$2'')
+        JSON=$(cat "$3" | jq '.'$1' = '$2'')
     fi
-    echo "$JSON" > "$TOP"/.dev_opts.json
+    echo "$JSON" > "$3"
 }
 
 function show_help() {
@@ -80,7 +83,7 @@ for var in "$@" ; do
     fi
     if [[ $var ==  '-resume' ]]; then
         sequential=true
-        save_choices restart true
+        save_choices restart true "$DEVCONFIG"
     fi
     if [[ $var ==  '-h' ]]; then
         show_help
@@ -91,9 +94,9 @@ done
 # Sequential Wizard Setup (mycroft-wizard -all)
 #################################################
 #set the mycroft-wizard sequence to the inst_types' possible
-if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) == "custom" ]] ; then
+if [[ $( jq -r .inst_type "$DEVCONFIG" ) == "custom" ]] ; then
     setup_sequence=(used_branch auto_update start_up add_path check_code extended_setup audio_input audio_output output_test input_test END)
-elif [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) == "picroft" ]] ; then
+elif [[ $( jq -r .inst_type "$DEVCONFIG" ) == "picroft" ]] ; then
     setup_sequence=(used_branch auto_update security audio_input audio_output output_test input_test END)
 fi
 
@@ -102,48 +105,50 @@ fi
 #################################################
 #functions ("contextual setup modules") to be deleted/added if run in selective mode
 delete_item_in_sequence=( extended_setup END )
-add_items_in_sequence=( alsa_info )
+add_items_in_sequence=( alsa_info STT_used TTS_used Basic_configuration )
 
 #single option wizard setup (based on dialog https://linux.die.net/man/1/dialog )
 TERMINAL=$(tty)
-HEIGHT=20
-WIDTH=40
-CHOICE_HEIGHT=10
+HEIGHT=25
+WIDTH=55
+CHOICE_HEIGHT=13
 BACKTITLE="Mycroft Wizard"
 TITLE="Single Selection"
 MENU="Choose one of the following options:"
 
-#restructure setup sequence if the setup should run selectively
-if [[ $sequential = false ]]; then
-    for target in "${delete_item_in_sequence[@]}"; do
-        for i in "${!setup_sequence[@]}"; do
-            if [[ ${setup_sequence[i]} = $target ]]; then
-                unset 'setup_sequence[i]'
-                break
-            fi
-        done
-    done
-    setup_sequence=("${setup_sequence[@]}" "${add_items_in_sequence[@]}")
-    #restructure the setup_sequence to the needs of dialog (eg [tag item, ..])
-    #tag=function, item=option saved in .dev_opts
-    for i in "${!setup_sequence[@]}"; do
-        #trim function name to get the dev_opts key
-        item_dev_opts=$( echo "${setup_sequence[$i]}" | tr -dc [:alnum:] )
-        item=$( jq -r ".$item_dev_opts" "$TOP"/.dev_opts.json )
-        if [[ $item == null ]] ; then
-            if [[ ${setup_sequence[$i]} == "alsa_info" ]] ; then
-                item="ALSA-Debug-Infos"
-            elif [[ ${setup_sequence[$i]} == "output_test" ]] ; then
-                item="Volume/Speaker-Test"
-            elif [[ ${setup_sequence[$i]} == "input_test" ]] ; then
-                item="Microphone-Test"
-            else
-                item="-"
-            fi
-        fi
-        setup_sequence[i]="${setup_sequence[$i]} $item"
-    done
-fi
+#BASIC Mycroft Config (dialog setup)
+BASIC_OPTIONS=( basic_configuration AA )
+basic_configuration=( lang )
+
+#STT Mycroft Config (dialog setup)
+#to set up additional services add "service" to the global stt array and define
+#"service"=( a b ) where a is the json key/value position above stt."service".*
+#visualize in shell: jq  '.stt.yandex.credential.client_key = "12345"' ~/.mycroft/mycroft.conf
+STT_OPTIONS=( mycroft A google_cloud B google_cloud_streaming C wit D ibm E kaldi F bing G houndify H deepspeech_server I govivace J yandex K )
+#populate arrays (=STT infos required)
+deepspeech_server=( uri )
+kaldi=( uri )
+bing=( token )
+wit=( token )
+govivace=( uri credential.token )
+ibm=( uri credential.token )
+google_cloud=( lang credential.json )
+google_cloud_streaming=( credential.json )
+houndify=( credential.client_id credential.client_key )
+yandex=( lang credential.api_key )
+
+#TTS Mycroft Config (dialog)
+TTS_OPTIONS=( basic_tts_config AA mimic A mimic2 B mozilla C espeak D marytts E fatts F polly G google H watson I bing J responsive_voice K spdsay L yandex M )
+basic_tts_config=( pulse_duck )
+mozilla=( url )
+espeak=( lang voice )
+marytts=( url )
+google=( lang )
+polly=( voice region engine access_key_id secret_access_key )
+watson=( voice apikey url X-Watson-Learning-Opt-Out )
+bing=( api_key format gender )
+responsive_voice=( gender pitch rate vol )
+yandex=( lang api_key voice emotion )
 
 #system specs that got printed out in a dialog box during "single selection wizard"
 function show_system_specs {
@@ -175,7 +180,7 @@ if found_exe tput ; then
     HIGHLIGHT=${YELLOW}
 fi
 
-#Todo Using Pako?
+#Todo Let Pako do this if more developped?
 function pkmgr_cmd() {
     if  [ $1 = debian ] ; then
         pkmgr_inst_autoaccept="apt-get install -y"
@@ -201,7 +206,7 @@ function pkmgr_cmd() {
     fi
     }
 
-dist=$( jq -r ".dist // empty" "$TOP"/.dev_opts.json )
+dist=$( jq -r ".dist // empty" "$DEVCONFIG" )
 pkmgr_cmd $dist
 
 function get_YNSQ() {
@@ -266,23 +271,23 @@ function speak() {
 
 function restart {
     #ensure continous sequence during initial_setup if reboot is called
-    if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ]] && [[ $sequential == true ]] ; then
+    if [[ $( jq -r .inst_type "$DEVCONFIG" ) = custom ]] && [[ $sequential == true ]] ; then
         echo "bash "$TOP"/bin/mycroft-wizard -all" >> .bashrc
-        if $( jq .autoupdate "$TOP"/.dev_opts.json ) || \
-           $( jq .startup "$TOP"/.dev_opts.json ) ; then
+        if $( jq .autoupdate "$DEVCONFIG" ) || \
+           $( jq .startup "$DEVCONFIG" ) ; then
             sed -i "s/^source/#source/" ~/.bashrc
         fi
     fi
     echo "     ${HIGHLIGHT}Reboot is required (Done automatically)${RESET}"
     echo
     #check if multistaged setup (like Matrix for instance) is run after initial setup
-    if [[ -n $( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json ) ]] && ! $( jq .initial_setup "$TOP"/.dev_opts.json) ; then
+    if [[ -n $( jq -r '.setup_substage // empty' "$DEVCONFIG" ) ]] && ! $( jq .initial_setup "$DEVCONFIG") ; then
         echo "     Since this is a  multistaged setup process you are required to run ${CYAN}mycroft-wizard${HIGHLIGHT}"
         echo "     to continue the process. Otherwise your device will not run properly${RESET}"
     fi
     #sequencer processing
     if [[ $sequential = true ]] ; then
-        save_choices restart true
+        save_choices restart true "$DEVCONFIG"
     fi
 
     sleep 10
@@ -304,7 +309,7 @@ function prepare_bash_patch {
 }
 
 function auto_login {
-    if ! $( jq .startup "$TOP"/.dev_opts.json ) || ! $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+    if ! $( jq .startup "$DEVCONFIG" ) || ! $( jq .autoupdate "$DEVCONFIG" ) ; then
         ##Autologin
         sudo mkdir -p /etc/systemd/system/getty@tty1.service.d &> /dev/null
         echo "[Service]" | sudo tee /etc/systemd/system/getty@tty1.service.d/autologin.conf &> /dev/null
@@ -313,6 +318,132 @@ function auto_login {
         sudo systemctl enable getty@tty1.service
     fi
 }
+
+function dialog_config_menu {
+    run="true"
+    if [[ $2 == "basic_"* ]]; then
+        if [[ $1 == "." ]]; then
+            pos_in_json=""
+        else
+            pos_in_json="$1"
+        fi
+    else
+        pos_in_json="$1.$2"
+    fi
+    while [[ -n $run ]] ; do
+        declare -a ENTRIES
+        eval arr_items=\${#$2[@]}
+        #check the required entries based on STT_CHOICE
+        #split the entries like "credentials.client_key" to a tagable name (eg client_key)
+        for ((i=0;i<$arr_items;i++)); do
+            arr_i="$2[$i]"
+            IFS='.' read -ra split <<< "${!arr_i}"
+            key=${split[-1]}
+            #json entries get some special treatment
+            if [[ $key != json ]] ; then
+                item=$( cat "$USERCONFIG" | jq -r ''$pos_in_json'.'${!arr_i}'' )
+            else
+                item=("pick from file")
+                ok_btn=("--ok-label "from_file"")
+            fi
+            ENTRIES+=("$key")
+            ENTRIES+=("$item")
+        done
+        if [[ -z $ok_btn ]]; then
+            ok_btn="--nook"
+        fi
+        ITEM_CHOICE=$(dialog \
+            --keep-window --begin 5 90 --no-collapse \
+            --infobox "$( cat $USERCONFIG | jq ''$1'' )" 30 70 \
+            --and-widget --keep-window --begin 5 15 --backtitle "$BACKTITLE" $ok_btn --title "$1" \
+            --inputmenu "$2" 30 70 "$CHOICE_HEIGHT" \
+            "${ENTRIES[@]}" 2>&1 >$TERMINAL)
+        unset ok_btn
+        #A file select dialog if you have to file in larger amounts
+        #this is (by now) the case for STTs with JSON keys
+        #TODO: This is fully Linux compatible, but i would guess no other
+        read -r run key item <<< "$ITEM_CHOICE"
+        if [[ -z $key ]] && [[ $run == json ]] ; then
+            while [[ -z $key ]]; do
+                #key="$x"
+                key="$run"
+                FILE=$(dialog \
+                    --keep-window --backtitle "$BACKTITLE" --title "$TITLE" --no-cancel \
+                    --fselect "$HOME/" $HEIGHT $WIDTH 2>&1 >$TERMINAL)
+                item=$( cat $FILE | jq . 2> /dev/null )
+                if [[ $? != 0 ]] ; then
+                    unset item && unset key
+                    dialog --keep-window --sleep 2 --no-collapse --infobox "          This entry carries no/faulty JSON data" 3 70 2>&1 >$TERMINAL
+                fi
+            done
+        fi
+        #the output from --inputmenu is RENAME <key> <item>
+        #search the full entry client_key -> credential.client_key (eg reverse above)
+        #to jq the changes in
+        for ((i=0;i<$arr_items;i++)); do
+            arr_i="$2[$i]"
+            IFS='.' read -ra split <<< "${!arr_i}"
+            if [[ " ${split[-1]} " == " $key " ]]; then
+                break
+            fi
+        done
+        if [[ -n $key ]] ; then
+            #check if number/ json / boolean
+            number='^[0-9]+([.][0-9]+)?$'
+            if [[ $key == json ]] || [[ $item == true ]] || [[ $item == false ]] || [[ $item =~ $number ]] ; then
+                JSON=$( cat "$USERCONFIG" | jq ''$pos_in_json'.'${!arr_i}' = '"$item"'' )
+            else
+                JSON=$( cat "$USERCONFIG" | jq ''$pos_in_json'.'${!arr_i}' = "'$item'"' )
+            fi
+            if [[ $? -eq 0 ]] ; then
+                echo "$JSON" > "$USERCONFIG"
+            fi
+            #clean up USERCONFIG to only carry the selected STT
+            #has to be juggled around since arrays cant be passed
+            arr_option=$3[@]
+            arr_options=("${!arr_option}")
+            for entry in "${arr_options[@]}"; do
+                if [[ $entry != $2 ]] && ! [[ $2 == "basic_"* ]] ; then
+                    JSON=$( cat "$USERCONFIG" | jq 'del('$1'.'$entry')' )
+                    echo "$JSON" > "$USERCONFIG"
+                fi
+            done
+        fi
+        unset ENTRIES
+    done
+}
+
+#restructure setup sequence if the setup should run selectively
+if [[ $sequential = false ]]; then
+    for target in "${delete_item_in_sequence[@]}"; do
+        for i in "${!setup_sequence[@]}"; do
+            if [[ ${setup_sequence[i]} = $target ]]; then
+                unset 'setup_sequence[i]'
+                break
+            fi
+        done
+    done
+    setup_sequence=("${setup_sequence[@]}" "${add_items_in_sequence[@]}")
+    #restructure the setup_sequence to the needs of dialog (eg [tag item, ..])
+    #tag=function, item=option saved in .dev_opts
+    for i in "${!setup_sequence[@]}"; do
+        #trim function name to get the dev_opts key
+        item_dev_opts=$( echo "${setup_sequence[$i]}" | tr -dc [:alnum:] )
+        item=$( jq -r ".$item_dev_opts" "$DEVCONFIG" )
+        if [[ $item == null ]] ; then
+            if [[ ${setup_sequence[$i]} == "alsa_info" ]] ; then
+                item="ALSA-Debug-Infos"
+            elif [[ ${setup_sequence[$i]} == "output_test" ]] ; then
+                item="Volume/Speaker-Test"
+            elif [[ ${setup_sequence[$i]} == "input_test" ]] ; then
+                item="Microphone-Test"
+            else
+                item="-"
+            fi
+        fi
+        setup_sequence[i]="${setup_sequence[$i]} $item"
+    done
+fi
 
 #################################################
 # Prerequisites that are not covered in base dev_setup
@@ -353,7 +484,7 @@ fi
 ################################################################################################
 
 function used_branch() {
-    if $( jq .initial_setup "$TOP"/.dev_opts.json ) ; then
+    if $( jq .initial_setup "$DEVCONFIG" ) ; then
         echo
         echo "#########################################################################"
         echo
@@ -377,7 +508,7 @@ function used_branch() {
     echo "that some skills (or parts of it) stop working. That's due to"
     echo "experimental features missing on master"
     echo
-    saved=$( jq -r '.usedbranch // empty' "$TOP"/.dev_opts.json )
+    saved=$( jq -r '.usedbranch // empty' "$DEVCONFIG" )
     if [[ -n $saved ]]; then
         echo "     You are currently running the ${HIGHLIGHT}${saved}${RESET} branch"
         echo
@@ -388,7 +519,7 @@ function used_branch() {
     #todo if get_YNSQ && [[ $saved = false ]]; then
     if get_YNSQ ; then
         echo -e "     $HIGHLIGHT Y - using 'master' branch $RESET"
-        save_choices usedbranch master
+        save_choices usedbranch master "$DEVCONFIG"
         cd "$TOP"
         git checkout master &> /dev/null
     elif [[ $key = S ]] || [[ $key = s ]] ; then
@@ -397,7 +528,7 @@ function used_branch() {
         return
     else
         echo -e "$HIGHLIGHT N - using an unstable branch $RESET"
-        save_choices usedbranch dev
+        save_choices usedbranch dev "$DEVCONFIG"
         cd "$TOP"
         git checkout dev &> /dev/null
     fi
@@ -419,7 +550,7 @@ function auto_update() {
     echo "${CYAN}For custom Linux installations:$RESET This will add the startup script"
     echo "to the end of your .bashrc only running the update routine everytime on boot"
     echo
-    saved=$( jq -r .autoupdate "$TOP"/.dev_opts.json )
+    saved=$( jq -r .autoupdate "$DEVCONFIG" )
     if [[ -n $saved ]] ; then
         echo "     You are currently running ${HIGHLIGHT}$(test $saved = "false" && echo "without ")auto updates${RESET}"
         echo
@@ -433,20 +564,20 @@ function auto_update() {
         #safety measure to not run multiple times
         if [[ $saved != $autoupdate ]] ; then
             #only applied to custom linux installs
-            if [ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ] && \
-                 ! $( jq .startup "$TOP"/.dev_opts.json ) ; then
+            if [ $( jq -r .inst_type "$DEVCONFIG" ) = custom ] && \
+                 ! $( jq .startup "$DEVCONFIG" ) ; then
                 cd "$TOP"
                 wget -N -q $REPO_PICROFT/home/pi/mycroft-core/auto_run.sh
-                if ! $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+                if ! $( jq .bash_patched "$DEVCONFIG" ) ; then
                     prepare_bash_patch
                     cp /etc/skel/.bashrc ~/.bashrc
                     cat ~/.bashrc.patch | tee -a ~/.bashrc &> /dev/null
-                    save_choices bash_patched true
+                    save_choices bash_patched true "$DEVCONFIG"
                 fi
                 echo "source "$TOP"/auto_run.sh" >> ~/.bashrc
             fi
             auto_login
-            save_choices autoupdate true
+            save_choices autoupdate true "$DEVCONFIG"
         fi
     elif [[ $key = S ]] || [[ $key = s ]] ; then
         echo -e "$HIGHLIGHT S - Skip $RESET"
@@ -455,7 +586,7 @@ function auto_update() {
     else
         echo -e "     $HIGHLIGHT N - I will be responsible for keeping Mycroft and the sytsem updated $RESET"
         autoupdate=false
-        save_choices autoupdate false
+        save_choices autoupdate false "$DEVCONFIG"
     fi
     sleep 0.5
 
@@ -476,7 +607,7 @@ function auto_update() {
             echo -e "     $HIGHLIGHT Y - hook me up $RESET"
             echo
             echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/$pkmgr_inst *" | sudo tee /etc/sudoers.d/013_"$USER"-pkmgr_install &> /dev/null
-            if [[ $( jq -r '.dist // empty' "$TOP"/.dev_opts.json ) == "debian" ]] ; then
+            if [[ $( jq -r '.dist // empty' "$DEVCONFIG" ) == "debian" ]] ; then
                 echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/apt-get * update *" | sudo tee /etc/sudoers.d/015_"$USER"-apt_update &> /dev/null
                 echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/dpkg *, ! /usr/bin/dpkg --install *, ! /usr/bin/dpkg -i *" | sudo tee /etc/sudoers.d/014_"$USER"-dpkg &> /dev/null
             fi
@@ -489,18 +620,18 @@ function auto_update() {
     # Cleanup
     if [[ $autoupdate != $saved ]] && [[ $autoupdate = false ]] ; then
         # remove auto_run only if its a custom install and startup isn't wanted
-        if [[ $( jq -r .inst_type "$TOP"/.dev_opts.json ) = custom ]] && \
-              ! $( jq .startup "$TOP"/.dev_opts.json ) ; then
+        if [[ $( jq -r .inst_type "$DEVCONFIG" ) = custom ]] && \
+              ! $( jq .startup "$DEVCONFIG" ) ; then
             rm "$TOP"/auto_run.sh
             sed -i "\:source $TOP/auto_run.sh:d" ~/.bashrc
             sed -i '/CUSTOM CODE/I,+1 d' ~/.bashrc
             sed -i '$!N;/END CUSTOM/!P;D' ~/.bashrc
-            save_choices bash_patched false
+            save_choices bash_patched false "$DEVCONFIG"
             sudo systemctl disable getty@tty1.service
         fi
         #get rid of the update password exceptions
         sudo rm /etc/sudoers.d/013_"$USER"-pkmgr_install
-        if [[ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ]] ; then
+        if [[ $( jq -r .dist "$DEVCONFIG" ) = debian ]] ; then
             sudo rm /etc/sudoers.d/014_"$USER"-dpkg
             sudo rm /etc/sudoers.d/015_"$USER"-apt_update
         fi
@@ -512,7 +643,7 @@ function auto_update() {
 }
 
 function add_path() {
-    if ! $( jq .startup "$TOP"/.dev_opts.json ) && ! $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+    if ! $( jq .startup "$DEVCONFIG" ) && ! $( jq .autoupdate "$DEVCONFIG" ) ; then
         echo
         echo "#########################################################################"
         echo
@@ -521,7 +652,7 @@ function add_path() {
         echo
         echo "Would you like this to be added to your PATH in the .profile?"
         echo
-        saved=$( jq -r .addpath "$TOP"/.dev_opts.json )
+        saved=$( jq -r .addpath "$DEVCONFIG" )
         if [[ -n $saved ]]; then
             echo "     Mycroft binaries are ${HIGHLIGHT}$(test $saved = "false" && echo "not ")included${RESET} in PATH"
             echo
@@ -551,7 +682,7 @@ function add_path() {
                 # set path so it includes Mycroft utilities
                 printf "if [ -d \"${TOP}/bin\" ] ; then\n    PATH=\"\$PATH:${TOP}/bin\"\nfi" > ~/.profile_mycroft
                 echo -e "     Type ${CYAN}mycroft-help$RESET to see available commands."
-                save_choices addpath true
+                save_choices addpath true "$DEVCONFIG"
             fi
         elif [[ $key = S ]] || [[ $key = s ]] ; then
             echo -e "$HIGHLIGHT S - Skip $RESET"
@@ -559,7 +690,7 @@ function add_path() {
             return
         else
             echo -e "     $HIGHLIGHT N - PATH left unchanged $RESET"
-            save_choices addpath false
+            save_choices addpath false "$DEVCONFIG"
             addpath=false
         fi
 
@@ -579,11 +710,11 @@ function add_path() {
         echo "startup. (.profile_mycroft will be deleted to avoid clutter in case it was"
         echo "set up earlier)"
         echo
-        if $( jq .addpath "$TOP"/.dev_opts.json ) ; then
+        if $( jq .addpath "$DEVCONFIG" ) ; then
             patch -R ~/.bash_profile < ~/.bash_profile.patch
             rm ~/.profile_mycroft
         fi
-        save_choices addpath false
+        save_choices addpath false "$DEVCONFIG"
     fi
 }
 
@@ -597,7 +728,7 @@ function start_up() {
     echo "This also sets up ${CYAN}automatic login${RESET} for the USER $USER"
     echo "during boot (if you're booting into commandline)."
     echo
-    saved=$( jq -r .startup "$TOP"/.dev_opts.json )
+    saved=$( jq -r .startup "$DEVCONFIG" )
     if [[ -n $saved ]]; then
         echo "     You are currently running ${HIGHLIGHT}$(test $saved = "false" && echo "without ")Picroft startup script${RESET}"
         echo
@@ -611,8 +742,8 @@ function start_up() {
         startup=true
         #safety measure to not run multiple times
         if [[ $saved != $startup ]] ; then
-            save_choices startup true
-            if ! $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+            save_choices startup true "$DEVCONFIG"
+            if ! $( jq .bash_patched "$DEVCONFIG" ) ; then
                 prepare_bash_patch
             else
                 awk '/CUSTOM CODE BELOW/ {p=1}; p; /END CUSTOM/ {p=0}' ~/.bashrc > ~/.bashrc.patch
@@ -651,7 +782,7 @@ function start_up() {
         echo -e "$HIGHLIGHT N - i take care $RESET"
         echo
         startup=false
-        save_choices startup false
+        save_choices startup false "$DEVCONFIG"
     fi
 
     #Cleanup
@@ -659,20 +790,20 @@ function start_up() {
         rm "$TOP"/audio_setup.sh
         rm "$TOP"/custom_setup.sh
         rm "$TOP"/version
-        if $( jq .bash_patched "$TOP"/.dev_opts.json ) ; then
+        if $( jq .bash_patched "$DEVCONFIG" ) ; then
             mv ~/.bashrc ~/.bashrc.bak
             cat /etc/skel/.bashrc > ~/.bashrc
             cat ~/.bashrc.patch.bak | tee -a ~/.bashrc &> /dev/null
             rm ~/.bashrc.patch.bak
         fi
-        if $( jq .autoupdate "$TOP"/.dev_opts.json ) ; then
+        if $( jq .autoupdate "$DEVCONFIG" ) ; then
             echo "source "$TOP"/auto_run.sh" >> ~/.bashrc
         else
             rm "$TOP"/auto_run.sh
             #erase header/footer indicateing custom code
             sed -i '/CUSTOM CODE/I,+1 d' ~/.bashrc
             sed -i '$!N;/END CUSTOM/!P;D' ~/.bashrc
-            save_choices bash_patched false
+            save_choices bash_patched false "$DEVCONFIG"
             systemctl disable getty@tty1.service
         fi
     fi
@@ -693,7 +824,7 @@ function check_code() {
     echo "(Developer) Do you want to automatically check code-style when submitting"
     echo "code. If unsure answer yes."
     echo
-    saved=$( jq -r .checkcode "$TOP"/.dev_opts.json )
+    saved=$( jq -r .checkcode "$DEVCONFIG" )
     if [[ -n $saved ]]; then
         echo "     Code is ${HIGHLIGHT}$(test $saved = "false" && echo "un")checked${RESET} at the moment"
         echo
@@ -704,14 +835,14 @@ function check_code() {
             mv "$TOP"/.git/hooks/pre-commit.sample "$TOP"/.git/hooks/pre-commit
         fi
         checkcode=true
-        save_choices checkcode true
+        save_choices checkcode true "$DEVCONFIG"
     elif [[ $key = S ]] || [[ $key = s ]] ; then
         echo -e "$HIGHLIGHT S - Skip $RESET"
         echo
         return
     else
         checkcode=false
-        save_choices checkcode false
+        save_choices checkcode false "$DEVCONFIG"
     fi
 
     #cleanup
@@ -734,22 +865,22 @@ function extended_setup() {
     if get_YNSQ ; then
         echo -e "     $HIGHLIGHT Y - hook me up $RESET"
         echo
-        if $( jq .initial_setup "$TOP"/.dev_opts.json ); then
+        if $( jq .initial_setup "$DEVCONFIG" ); then
             echo
             echo "     ${CYAN}The extended setup will be provided after"
         fi
-        save_choices extendedsetup true
+        save_choices extendedsetup true "$DEVCONFIG"
     elif [[ $key = S ]] || [[ $key = s ]] ; then
         echo -e "$HIGHLIGHT S - Skip $RESET"
         echo
-        save_choices extendedsetup false
+        save_choices extendedsetup false "$DEVCONFIG"
         return
     else
         echo -e "     $HIGHLIGHT N - i want to do this by myself $RESET"
         echo
-        save_choices extendedsetup false
+        save_choices extendedsetup false "$DEVCONFIG"
     fi
-    if $( jq .initial_setup "$TOP"/.dev_opts.json ); then
+    if $( jq .initial_setup "$DEVCONFIG" ); then
         echo "     installing the required Python packages as a next step"
         echo
         echo "     ${HIGHLIGHT}This will take aprox. 10 min to run (depending on device)$RESET"
@@ -757,18 +888,18 @@ function extended_setup() {
         echo
         #this will ensure the script runs out, yet stays in sequence
         runout=true
-        save_choices restart true
+        save_choices restart true "$DEVCONFIG"
         sleep 0.5
     fi
 }
 
 function audio_input() {
     # "// not" gives back false if nothing is set, true/false in case it is
-    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+    if $( jq .extendedsetup "$DEVCONFIG") ; then
         #Looking for substages. // empty gives us "" if none is set, so this
         #needs no primer. Remember to "cat .dev_opts.json | jq 'del(.setup_substage)'
         #at the end
-        setup_substage=$( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json )
+        setup_substage=$( jq -r '.setup_substage // empty' "$DEVCONFIG" )
         case $setup_substage in
             '')
                 echo
@@ -780,7 +911,7 @@ function audio_input() {
                 echo
                 echo "As a voice assistant, Mycroft needs to access a microphone to operate.
                 "
-                saved=$( jq -r '.audioinput // empty' "$TOP"/.dev_opts.json )
+                saved=$( jq -r '.audioinput // empty' "$DEVCONFIG" )
                 if [[ -n $saved ]]; then
                     echo "Microphone input is set to ${HIGHLIGHT}$saved${RESET}
                 "
@@ -791,7 +922,7 @@ function audio_input() {
                 echo "  1) Seeed Mic Array 2.0 (USB)"
                 echo "  2) PlayStation Eye (USB)"
                 echo "  3) Blue Snoball ICE (USB)"
-                if [ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ] ; then
+                if [ $( jq -r .dist "$DEVCONFIG" ) = debian ] ; then
                     echo "  4) Google AIY v1 mic array"
                     echo "  5) Matrix Voice HAT."
                 fi
@@ -864,9 +995,9 @@ function audio_input() {
                             #using printf due to inconsistencies of echo -e "\n"
                             printf '# Use PulseAudio by default\npcm.!default {\n   type pulse\n   fallback "sysdefault"\n   hint {\n      show on\n      description "Default ALSA Output (currently PulseAudio Sound Server)"\n   }\n}\n\nctl.!default {\n   type pulse\n   fallback "sysdefault"\n}\n' | sudo tee -a /etc/asound.conf &> /dev/null
 
-                            save_choices audioinput seed_mic_array_20
+                            save_choices audioinput seed_mic_array_20 "$DEVCONFIG"
                             if [[ $sequential = true ]] ; then
-                                save_choices restart true
+                                save_choices restart true "$DEVCONFIG"
                             else
                                 restart
                             fi
@@ -916,13 +1047,13 @@ function audio_input() {
                             sudo cp AIY-asound.conf /etc/asound.conf
 
                             # rebuild venv
-                            #save_choices firstrun false
+                            #save_choices firstrun false "$DEVCONFIG"
                             #source "$TOP"/dev_setup.sh
-                            #save_choices firstrun true
+                            #save_choices firstrun true "$DEVCONFIG"
 
-                            save_choices audioinput google_aiy
+                            save_choices audioinput google_aiy "$DEVCONFIG"
                             if [[ $sequential = true ]] ; then
-                                save_choices restart true
+                                save_choices restart true "$DEVCONFIG"
                             else
                                 restart
                             fi
@@ -933,14 +1064,14 @@ function audio_input() {
                         echo "     $key - PS Eye"
                         echo
                         # nothing to do, this is the default
-                        save_choices audioinput ps_eye
+                        save_choices audioinput ps_eye "$DEVCONFIG"
                         break
                         ;;
                     4)
                         echo "     $key - Blue Snoball"
                         echo
                         # nothing to do, this is the default
-                        save_choices audioinput blue_snoball
+                        save_choices audioinput blue_snoball "$DEVCONFIG"
                         break
                         ;;
                     5)
@@ -967,8 +1098,8 @@ function audio_input() {
 
                             echo "     Rebooting to apply kernel updates..."
 
-                            save_choices setup_substage MatrixS1
-                            save_choices audioinput matrix_voice
+                            save_choices setup_substage MatrixS1 "$DEVCONFIG"
+                            save_choices audioinput matrix_voice "$DEVCONFIG"
                             # in this case (multi substaged sequences) call the reboot to not progress
                             # in setup_stages
                             restart
@@ -983,7 +1114,7 @@ function audio_input() {
                         echo "     issues, the most likely cause is an incompatible microphone."
                         echo "     The PS Eye is cheap -- save yourself hassle and just buy one!"
 
-                        save_choices audioinput other
+                        save_choices audioinput other "$DEVCONFIG"
                         break
                         ;;
                     esac
@@ -995,7 +1126,7 @@ function audio_input() {
                 echo "Installing matrixio-kernel-modules..."
                 sudo apt install matrixio-kernel-modules -y
 
-                save_choices setup_substage MatrixS2
+                save_choices setup_substage MatrixS2 "$DEVCONFIG"
                 restart
                 ;;
 
@@ -1019,13 +1150,13 @@ function audio_input() {
                 echo
 
                 if [[ $sequential = true ]] ; then
-                    save_choices restart true
+                    save_choices restart true "$DEVCONFIG"
                 fi
                 ;;
         esac
         #reset substage
-        JSON=$(cat "$TOP"/.dev_opts.json | jq 'del(.setup_substage)')
-        echo "$JSON" > "$TOP"/.dev_opts.json
+        JSON=$(cat "$DEVCONFIG" | jq 'del(.setup_substage)')
+        echo "$JSON" > "$DEVCONFIG"
         if [[ $sequential = false ]] ; then
             restart
         fi
@@ -1033,7 +1164,7 @@ function audio_input() {
 }
 
 function audio_output() {
-    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+    if $( jq .extendedsetup "$DEVCONFIG") ; then
         echo
         echo "============================================================================="
         echo
@@ -1043,12 +1174,12 @@ function audio_output() {
         echo "     2) HDMI audio (e.g. a TV or monitor with built-in speakers)"
         echo "     3) USB audio (e.g. a USB soundcard or USB mic/speaker combo)"
         echo "     4) ReSpeaker Mic Array v2.0 (speaker plugged in to Mic board)"
-        if [ $( jq -r .dist "$TOP"/.dev_opts.json ) = debian ] ; then
+        if [ $( jq -r .dist "$DEVCONFIG" ) = debian ] ; then
             echo "     5) Google AIY Voice HAT and microphone board (Voice Kit v1)"
             echo "     6) Matrix Voice HAT."
         fi
         echo
-        saved=$( jq -r '.audiooutput // empty' "$TOP"/.dev_opts.json )
+        saved=$( jq -r '.audiooutput // empty' "$DEVCONFIG" )
         if [[ -n $saved ]]; then
             echo "Microphone input is set to ${HIGHLIGHT}$saved${RESET}
         "
@@ -1067,7 +1198,7 @@ function audio_output() {
                 # regarding "amixer cset numid=3"
                 sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
                 echo 'sudo amixer cset numid=3 "1" > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
-                save_choices audiooutput analog_audio
+                save_choices audiooutput analog_audio "$DEVCONFIG"
 
                 break
                 ;;
@@ -1080,7 +1211,7 @@ function audio_output() {
                 # regarding "amixer cset numid=3"
                 sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
                 echo 'sudo amixer cset numid=3 "2"  > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
-                save_choices audiooutput hdmi_audio
+                save_choices audiooutput hdmi_audio "$DEVCONFIG"
 
                 break
                 ;;
@@ -1092,25 +1223,25 @@ function audio_output() {
                 # regarding "amixer cset numid=3"
                 sed -i "/sudo amixer cset numid=3/d" "$TOP"/audio_setup.sh &> /dev/null
                 echo 'sudo amixer cset numid=3 "0"  > /dev/null 2>&1' >> "$TOP"/audio_setup.sh
-                save_choices audiooutput usb_audio
+                save_choices audiooutput usb_audio "$DEVCONFIG"
 
                 break
                 ;;
              4)
                 echo "     $key - Seeed Mic Array v2.0"
-                save_choices audiooutput seed_mic_array_20
+                save_choices audiooutput seed_mic_array_20 "$DEVCONFIG"
 
                 break
                 ;;
              5)
                 echo "     $key - Google AIY Voice HAT and microphone board (Voice Kit v1)"
-                save_choices audiooutput google_aiy
+                save_choices audiooutput google_aiy "$DEVCONFIG"
 
                 break
                 ;;
              6)
                 echo "     $key - Matrix HAT"
-                save_choices audiooutput google_aiy
+                save_choices audiooutput google_aiy "$DEVCONFIG"
 
                 break
                 ;;
@@ -1123,7 +1254,7 @@ function audio_output() {
 }
 
 function output_test() {
-    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+    if $( jq .extendedsetup "$DEVCONFIG") ; then
         lvl=7
         echo
         echo "#########################################################################"
@@ -1175,7 +1306,7 @@ function output_test() {
 }
 
 function input_test() {
-    if $( jq .extendedsetup "$TOP"/.dev_opts.json) ; then
+    if $( jq .extendedsetup "$DEVCONFIG") ; then
         echo
         echo "Testing microphone..."
         echo "When prompted, say something like 'testing 1 2 3 4 5 6 7 8 9 10'."
@@ -1268,7 +1399,7 @@ function security() {
             if get_YNSQ ; then
                 echo -e "     $HIGHLIGHT Y - hook me up $RESET"
                 echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/$pkmgr_inst *" | sudo tee /etc/sudoers.d/013_"$USER"-pkmgr_install &> /dev/null
-                if [[ $( jq -r '.dist // empty' "$TOP"/.dev_opts.json ) == "debian" ]] ; then
+                if [[ $( jq -r '.dist // empty' "$DEVCONFIG" ) == "debian" ]] ; then
                     echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/apt-get update" | sudo tee /etc/sudoers.d/015_"$USER"-apt_update &> /dev/null
                     echo "$USER ALL=(ALL) NOPASSWD: /usr/bin/dpkg *, ! /usr/bin/dpkg --install *, ! /usr/bin/dpkg -i *" | sudo tee /etc/sudoers.d/014_"$USER"-dpkg &> /dev/null
                 fi
@@ -1332,14 +1463,14 @@ function security() {
 
 function END() {
 
-    save_choices firstrun false
+    save_choices firstrun false "$DEVCONFIG"
     devsetup_ended=true
     echo
     echo "========================================================================="
     echo
     echo "That's all, setup is complete!"
     echo
-    if $( jq .startup "$TOP"/.dev_opts.json ); then
+    if $( jq .startup "$DEVCONFIG" ); then
         echo "Now we'll pull down the latest software updates and start Mycroft."
         echo "You'll be prompted to pair this device with an account at"
         echo "https://home.mycroft.ai, then you'll be set to enjoy your"
@@ -1351,13 +1482,13 @@ function END() {
     echo "     Branch:                      ${HIGHLIGHT}$( jq -r .usedbranch .dev_opts.json )$RESET"
     echo "     Auto update:                 ${HIGHLIGHT}$( jq -r .autoupdate .dev_opts.json )$RESET"
     echo "     Auto startup:                ${HIGHLIGHT}$( jq -r .startup .dev_opts.json )$RESET"
-    if $( $( jq .startup "$TOP"/.dev_opts.json) || $( jq .addpath "$TOP"/.dev_opts.json ) || $( jq .autoupdate "$TOP"/.dev_opts.json ) ); then
+    if $( $( jq .startup "$DEVCONFIG") || $( jq .addpath "$DEVCONFIG" ) || $( jq .autoupdate "$DEVCONFIG" ) ); then
         on_path=true
     else
         on_path=false
     fi
     echo "     Exectute from everywhere:    ${HIGHLIGHT}$on_path$RESET"
-    if [[ $( jq .inst_type "$TOP"/.dev_opts.json ) = "custom" ]] ; then
+    if [[ $( jq .inst_type "$DEVCONFIG" ) = "custom" ]] ; then
         echo "     Auto check code (dev):       ${HIGHLIGHT}$( jq -r .checkcode .dev_opts.json )$RESET"
     fi
     echo "     Input:                       ${HIGHLIGHT}$( jq -r .audioinput .dev_opts.json )$RESET"
@@ -1373,6 +1504,34 @@ function END() {
     echo
     echo "${HIGHLIGHT}Press any key to proceed ...${RESET}"
     read -N1 -s anykey
+}
+
+function STT_used {
+    STT_CHOICE=$(dialog \
+        --backtitle "$BACKTITLE" --title "STT" \
+        --menu "$MENU" "$HEIGHT" "$WIDTH" "$CHOICE_HEIGHT" \
+        "${STT_OPTIONS[@]}" 2>&1 >$TERMINAL)
+    save_choices stt.module $STT_CHOICE $USERCONFIG
+    save_choices STTused $STT_CHOICE $DEVCONFIG
+    if [[ $STT_CHOICE != mycroft ]] && [[ -n $STT_CHOICE ]]; then
+        dialog_config_menu .stt $STT_CHOICE STT_OPTIONS
+    fi
+}
+
+function TTS_used {
+    TTS_CHOICE=$(dialog \
+        --backtitle "$BACKTITLE" --title "TTS" \
+        --menu "$MENU" "$HEIGHT" "$WIDTH" "$CHOICE_HEIGHT" \
+        "${TTS_OPTIONS[@]}" 2>&1 >$TERMINAL)
+    if [[ $TTS_CHOICE != basic_tts_config ]]; then
+        save_choices tts.module $TTS_CHOICE $USERCONFIG
+        save_choices TTSused $TTS_CHOICE $DEVCONFIG
+    fi
+    dialog_config_menu .tts $TTS_CHOICE TTS_OPTIONS
+}
+
+function Basic_configuration {
+    dialog_config_menu . "basic_configuration" BASIC_OPTIONS
 }
 
 function alsa_info() {
@@ -1395,9 +1554,9 @@ function alsa_info() {
 if [[ $sequential = "true" ]] ; then
     clear
     #redefine the setup_sequence array if a restartion happend before
-    if $( jq .restart "$TOP"/.dev_opts.json ) ; then
-    #if $( jq .reboot "$TOP"/.dev_opts.json ) ; then
-        srch=$( jq -r ".setup_stage // empty" "$TOP"/.dev_opts.json )
+    if $( jq .restart "$DEVCONFIG" ) ; then
+    #if $( jq .reboot "$DEVCONFIG" ) ; then
+        srch=$( jq -r ".setup_stage // empty" "$DEVCONFIG" )
         items=${#setup_sequence[@]}
         for (( i=0 ; i < items ; i++ )) ; do
             if [ ${setup_sequence[$i]} != $srch ] ; then
@@ -1409,15 +1568,15 @@ if [[ $sequential = "true" ]] ; then
         # unhook the mycroft-wizard from .bashrc
         sed -i "\:bash $TOP/bin/mycroft-wizard -all:d" ~/.bashrc
         # clear the temporarily disabled auto_run script
-        if $( jq .autoupdate "$TOP"/.dev_opts.json ) || \
-           $( jq .startup "$TOP"/.dev_opts.json ) ; then
+        if $( jq .autoupdate "$DEVCONFIG" ) || \
+           $( jq .startup "$DEVCONFIG" ) ; then
             sed -i "s/^#source/source/" ~/.bashrc
         fi
-        save_choices restart false
+        save_choices restart false "$DEVCONFIG"
     fi
     for item in "${setup_sequence[@]}" ; do
-        save_choices setup_stage $item
-        if $( jq .restart "$TOP"/.dev_opts.json ) ; then
+        save_choices setup_stage $item "$DEVCONFIG"
+        if $( jq .restart "$DEVCONFIG" ) ; then
             # just an indicator if the sequencer is supposed to run out
             if [[ $runout != true ]] ; then
                 restart
@@ -1432,10 +1591,10 @@ if [[ $sequential = "true" ]] ; then
 ##################################
 # Single Selection Wizard
 else
-    save_choices extendedsetup true
+    save_choices extendedsetup true "$DEVCONFIG"
     #automatically resume setup process in case a substage is set
-    if [[ -n $( jq -r '.setup_substage // empty' "$TOP"/.dev_opts.json) ]] ; then
-        $( jq -r .setup_stage "$TOP"/.dev_opts.json)
+    if [[ -n $( jq -r '.setup_substage // empty' "$DEVCONFIG") ]] ; then
+        $( jq -r .setup_stage "$DEVCONFIG")
     else
         while true; do
             OPTIONS=(${setup_sequence[@]})
@@ -1457,7 +1616,7 @@ else
             for i in "${!setup_sequence[@]}"; do
                 IFS=' ' read -ra split <<< "${setup_sequence[$i]}"
                 item_dev_opts=$( echo "${split[0]}" | tr -dc [:alnum:] )
-                item=$( jq -r ".$item_dev_opts" "$TOP"/.dev_opts.json )
+                item=$( jq -r ".$item_dev_opts" "$DEVCONFIG" )
                 if [[ ${split[1]} != $item ]] && [[ $item != null ]] ; then
                     setup_sequence["$i"]="${split[0]} $item"
                 fi
@@ -1465,11 +1624,11 @@ else
         done
     fi
     clear
-    save_choices extendedsetup false
+    save_choices extendedsetup false "$DEVCONFIG"
 fi
 
 #continue setup process with auto_run if this is not a firstrun
-if ($( jq .startup "$TOP"/.dev_opts.json ) || $( jq .autoupdate "$TOP"/.dev_opts.json )) && [[ $devsetup_ended == true ]] ; then
+if ($( jq .startup "$DEVCONFIG" ) || $( jq .autoupdate "$DEVCONFIG" )) && [[ $devsetup_ended == true ]] ; then
     echo
     echo "     ${HIGHLIGHT}Reboot is required${RESET}"
     sleep 5

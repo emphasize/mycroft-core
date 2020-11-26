@@ -24,26 +24,25 @@ REPO_PICROFT="https://raw.githubusercontent.com/emphasize/enclosure-picroft/refa
 REPO_CORE="https://github.com/emphasize/mycroft-core"
 
 TOP=$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )
+DEVCONFIG="$TOP"/.dev_opts.json
+USERCONFIG="$HOME"/.mycroft/mycroft.conf
 
-if [[ ! -f "$TOP"/.dev_opts.json ]] ; then
-    touch "$TOP"/.dev_opts.json
-    echo '{ "firstrun": true }' > "$TOP"/.dev_opts.json
+if [[ ! -f "$DEVCONFIG" ]] ; then
+    touch "$DEVCONFIG"
+    echo '{ "firstrun": true }' > "$DEVCONFIG"
 fi
 
+# This saves the option choices; USAGE: save_choices [KEY] [VALUE] [CONFIG]; save_choices branch true "$DEVCONFIG"
 function save_choices() {
-    if [[ ! -f "$TOP"/.dev_opts.json ]] ; then
-        touch "$TOP"/.dev_opts.json
-        echo "{}" > "$TOP"/.dev_opts.json
-    fi
     #no chance to bring in boolean with --arg
     #NOTE: Boolean are called without -r (whiich only outputs string)
-    #eg if jq ".startup" "$TOP"/.dev_opts.json ; then
+    #eg if jq ".startup" "$DEVCONFIG" ; then
     if [ "$2" != true ] && [ "$2" != false ] ; then
-        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = "'$2'"')
+        JSON=$(cat "$3"| jq '.'$1' = "'$2'"')
     else
-        JSON=$(cat "$TOP"/.dev_opts.json | jq '.'$1' = '$2'')
+        JSON=$(cat "$3" | jq '.'$1' = '$2'')
     fi
-    echo "$JSON" > "$TOP"/.dev_opts.json
+    echo "$JSON" > "$3"
 }
 
 function clean_mycroft_files() {
@@ -242,7 +241,7 @@ function fedora_install() {
 
 
 function arch_install() {
-    $SUDO pacman -Syu --needed --noconfirm wget git python python-pip python-setuptools python-virtualenv python-gobject ed libffi swig portaudio mpg123 screen flac curl icu libjpeg-turbo base-devel jq pulseaudio pulseaudio-zeroconf alsa-utils pulseaudio-alsa asoundconf dialog
+    $SUDO pacman -Syu --needed --noconfirm wget git python python-pip python-setuptools python-virtualenv python-gobject ed libffi swig portaudio mpg123 screen flac curl icu libjpeg-turbo base-devel jq pulseaudio pulseaudio-zeroconf alsa-utils pulseaudio-alsa asoundconf dialog i2c-tools lm_sensors
 
     pacman -Qs '^fann$' &> /dev/null || (
         git clone  https://aur.archlinux.org/fann.git
@@ -329,7 +328,7 @@ ${YELLOW}Make sure to manually install:$BLUE git python3 python-setuptools pytho
 
 # Run a setup mycroft-wizard the very first time that guides the user through some decisions
 #TODO ANother entry
-if [[ -n $( grep '"firstrun": true' "$TOP"/.dev_opts.json ) ]] && [ -z $CI ] ; then
+if [[ -n $( grep '"firstrun": true' "$DEVCONFIG" ) ]] && [ -z $CI ] ; then
 
     clear
     echo
@@ -367,7 +366,7 @@ if [[ -n $( grep '"firstrun": true' "$TOP"/.dev_opts.json ) ]] && [ -z $CI ] ; t
     if [[ ! -d $TOP/.git ]] ; then
         #indicating that mycroft-core has to be git cloned beforehand (which happens later)
         git clone $REPO_CORE
-        cd "$TOP"/mycroft-core && mv "$TOP"/.dev_opts.json ./
+        cd "$TOP"/mycroft-core && mv "$DEVCONFIG" ./
         TOP=$( pwd )
         bash "$TOP"/dev_setup.sh
         exit
@@ -375,17 +374,17 @@ if [[ -n $( grep '"firstrun": true' "$TOP"/.dev_opts.json ) ]] && [ -z $CI ] ; t
     clear
     #Store a fingerprint of setup
     md5sum "$TOP"/dev_setup.sh > .installed
-    save_choices dir $TOP
-    save_choices dist $dist
-    save_choices inst_type custom
-    save_choices initial_setup true
-    save_choices usedbranch master
-    save_choices autoupdate false
-    save_choices startup false
-    save_choices addpath false
-    save_choices checkcode false
-    save_choices restart false
-    save_choices bash_patched false
+    save_choices dir $TOP "$DEVCONFIG"
+    save_choices dist $dist "$DEVCONFIG"
+    save_choices inst_type custom "$DEVCONFIG"
+    save_choices initial_setup true "$DEVCONFIG"
+    save_choices usedbranch master "$DEVCONFIG"
+    save_choices autoupdate false "$DEVCONFIG"
+    save_choices startup false "$DEVCONFIG"
+    save_choices addpath false "$DEVCONFIG"
+    save_choices checkcode false "$DEVCONFIG"
+    save_choices restart false "$DEVCONFIG"
+    save_choices bash_patched false "$DEVCONFIG"
 
     echo
     echo "  Would you like help setting up your system (Setup Wizard)?"
@@ -408,15 +407,15 @@ if [[ -n $( grep '"firstrun": true' "$TOP"/.dev_opts.json ) ]] && [ -z $CI ] ; t
         echo
         echo "You are currently running with these defaults:"
         echo
-        echo "     Branch:                      ${HIGHLIGHT}$( jq -r '.usedbranch // empty' "$TOP"/.dev_opts.json )$RESET"
-        echo "     Auto update:                 ${HIGHLIGHT}$( jq -r '.autoupdate // empty' "$TOP"/jq  )$RESET"
-        echo "     Auto startup:                ${HIGHLIGHT}$( jq -r '.startup // empty' "$TOP"/.dev_opts.json )$RESET"
-        echo "     Exectute from everywhere:    ${HIGHLIGHT}$( jq -r '.addpath // empty' "$TOP"/.dev_opts.json )$RESET"
-        echo "     Auto check code (dev):       ${HIGHLIGHT}$( jq -r '.checkcode // empty' "$TOP"/.dev_opts.json )$RESET"
-        echo "     Input:                       ${HIGHLIGHT}$( jq -r '.audioinput' "$TOP"/.dev_opts.json )$RESET"
-        echo "     Output:                      ${HIGHLIGHT}$( jq -r '.audiooutput' "$TOP"/.dev_opts.json )$RESET"
+        echo "     Branch:                      ${HIGHLIGHT}$( jq -r '.usedbranch // empty' "$DEVCONFIG" )$RESET"
+        echo "     Auto update:                 ${HIGHLIGHT}$( jq -r '.autoupdate // empty' "$DEVCONFIG"  )$RESET"
+        echo "     Auto startup:                ${HIGHLIGHT}$( jq -r '.startup // empty' "$DEVCONFIG" )$RESET"
+        echo "     Exectute from everywhere:    ${HIGHLIGHT}$( jq -r '.addpath // empty' "$DEVCONFIG" )$RESET"
+        echo "     Auto check code (dev):       ${HIGHLIGHT}$( jq -r '.checkcode // empty' "$DEVCONFIG" )$RESET"
+        echo "     Input:                       ${HIGHLIGHT}$( jq -r '.audioinput' "$DEVCONFIG" )$RESET"
+        echo "     Output:                      ${HIGHLIGHT}$( jq -r '.audiooutput' "$DEVCONFIG" )$RESET"
         #Get the requirements and basic setup and leave setup
-        save_choices initial_setup false
+        save_choices initial_setup false "$DEVCONFIG"
         sleep 5
     fi
 fi
@@ -617,15 +616,15 @@ fi
 #build and install mimic
 
 if [[ $opt_skipmimicbuild == true ]] ; then
-    save_choices mimic_built false
+    save_choices mimic_built false "$DEVCONFIG"
 fi
 if [[ $opt_forcemimicbuild == true ]] ; then
-    save_choices mimic_built true
+    save_choices mimic_built true "$DEVCONFIG"
 fi
 
 #  Pull down mimic source?  Most will be happy with just the package
 # Check whether to build mimic (it takes a really long time!)
-if [[ $(jq -r .mimic_built "$TOP"/.dev_opts.json) == null ]] ; then
+if [[ $(jq -r .mimic_built "$DEVCONFIG") == null ]] ; then
     sleep 0.5
     echo
     echo "Mycroft uses its Mimic technology to speak to you.  Mimic can run both"
@@ -641,17 +640,17 @@ if [[ $(jq -r .mimic_built "$TOP"/.dev_opts.json) == null ]] ; then
     if get_YN ; then
         echo -e "     $HIGHLIGHT Y - Mimic will be built $RESET"
         echo
-        save_choices mimic_built true
+        save_choices mimic_built true "$DEVCONFIG"
     else
         echo -e "     $HIGHLIGHT N - skip Mimic build $RESET"
         echo
-        save_choices mimic_built false
+        save_choices mimic_built false "$DEVCONFIG"
     fi
 fi
 
 cd "$TOP"
 
-if $( jq .mimic_built "$TOP"/.dev_opts.json ) ; then
+if $( jq .mimic_built "$DEVCONFIG" ) ; then
     # first, look for a build of mimic in the folder
     has_mimic=''
     if [[ -f ${TOP}/mimic/bin/mimic ]] ; then
@@ -681,7 +680,7 @@ if $( jq .mimic_built "$TOP"/.dev_opts.json ) ; then
         echo "$JSON" | sudo tee /etc/mycroft/mycroft.conf
     fi
 else
-    if $( jq .initial_setup "$TOP"/.dev_opts.json ) ; then
+    if $( jq .initial_setup "$DEVCONFIG" ) ; then
         #preparing conf with mimic2 (since the default conf points to mimic regardless this steps)
         JSON=$( cat /etc/mycroft/mycroft.conf | jq '.tts += { "module": "mimic2" }' )
         echo "$JSON" | sudo tee /etc/mycroft/mycroft.conf &> /dev/null
@@ -708,9 +707,9 @@ chmod +x "$TOP"/bin/mycroft-wizard
 md5sum "$TOP"/requirements/requirements.txt "$TOP"/requirements/extra-audiobackend.txt "$TOP"/requirements/extra-stt.txt "$TOP"/requirements/extra-mark1.txt "$TOP"/requirements/tests.txt "$TOP"/dev_setup.sh > .installed
 
 #switch back to bin/mycroft-wizard if this is a firstrun
-if $( jq .initial_setup "$TOP"/.dev_opts.json ) ; then
+if $( jq .initial_setup "$DEVCONFIG" ) ; then
     source "$TOP"/bin/mycroft-wizard -all
-    #save_choices restart false
+    #save_choices restart false "$DEVCONFIG"
 fi
-save_choices firstrun false
-save_choices initial_setup false
+save_choices firstrun false "$DEVCONFIG"
+save_choices initial_setup false "$DEVCONFIG"
