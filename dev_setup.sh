@@ -359,8 +359,10 @@ if [[ -n $( grep '"firstrun": true' "$DEVCONFIG" ) ]] && [ -z $CI ] ; then
 
     install_deps
 
-    # Make sure that the user is present in audiospecific groups
+    # Make sure that the user/pulse is present in audiospecific groups
     sudo usermod -aG `cat /etc/group | grep -e '^pulse:' -e '^audio:' -e '^pulse-access:' -e '^pulse-rt:' -e '^video:' | awk -F: '{print $1}' | tr '\n' ',' | sed 's:,$::g'` `whoami`
+    sudo usermod -aG video pulse
+    sudo usermod -aG audio pulse
 
     #clone Repo if not present and reset TOP according to the situation
     if [[ ! -d $TOP/.git ]] ; then
