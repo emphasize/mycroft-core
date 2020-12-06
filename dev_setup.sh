@@ -371,6 +371,7 @@ if [[ -n $( grep '"firstrun": true' "$DEVCONFIG" ) ]] && [ -z $CI ] ; then
         cd "$TOP"/mycroft-core && mv "$DEVCONFIG" ./
         TOP=$( pwd )
         bash "$TOP"/dev_setup.sh
+        git checkout dev-mycroft-wizard
         exit
     fi
     clear

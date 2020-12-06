@@ -528,9 +528,9 @@ function used_branch() {
         return
     else
         echo -e "$HIGHLIGHT N - using an unstable branch $RESET"
-        save_choices usedbranch dev "$DEVCONFIG"
+        save_choices usedbranch dev-mycroft-wizard "$DEVCONFIG"
         cd "$TOP"
-        git checkout dev &> /dev/null
+        git checkout dev-mycroft-wizard &> /dev/null
     fi
     # Fetching for future time comparisons
     git fetch
